@@ -9,7 +9,7 @@ server:
 
 admin:
   token_env: SWITCHYARD_ADMIN_TOKEN
-  cors_origins: ["http://localhost:3000", "http://127.0.0.1:3000"]   # the dashboard in web/
+  cors_origins: ["http://localhost:3100", "http://127.0.0.1:3100"]   # the dashboard in web/
 
 redis:
   addr: "localhost:16379"

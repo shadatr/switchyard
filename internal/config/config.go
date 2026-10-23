@@ -198,7 +198,7 @@ func (c *Config) ApplyDefaults() {
 		c.Admin.TokenEnv = "SWITCHYARD_ADMIN_TOKEN"
 	}
 	if c.Admin.CORSOrigins == nil {
-		c.Admin.CORSOrigins = []string{"http://localhost:3000"}
+		c.Admin.CORSOrigins = []string{"http://localhost:3100", "http://127.0.0.1:3100"}
 	}
 	setDur(&c.Redis.Timeout, 50*time.Millisecond)
 	for i := range c.Providers {
