@@ -1,3 +1,5 @@
+auth:
+  enabled: false  # bare proxy path; phase 4+ benches use bench/switchyard.bench-auth.yaml
 # Benchmark config: one zero-latency mock target, no external dependencies.
 server:
   addr: ":8787"

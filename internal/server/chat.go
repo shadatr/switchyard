@@ -21,6 +21,8 @@ import (
 // now and the analytics pipeline in later phases.
 type record struct {
 	RequestID        string
+	KeyID            string
+	ProjectID        string
 	Start            time.Time
 	Alias            string
 	Target           string
@@ -38,8 +40,10 @@ type record struct {
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	rec := &record{RequestID: ulid.Make().String(), Start: s.now(), Cache: "bypass", Status: http.StatusOK}
+	rec := &record{RequestID: ulid.Make().String(), Start: s.startTime(r.Context()), Cache: "bypass", Status: http.StatusOK}
 	w.Header().Set(HeaderRequestID, rec.RequestID)
+	key := KeyFrom(r.Context())
+	rec.KeyID, rec.ProjectID = key.ID, key.ProjectID
 	defer s.finish(rec)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
@@ -65,6 +69,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	model, ok := s.models[req.Model]
 	if !ok {
 		s.reject(w, rec, http.StatusNotFound, "invalid_request_error", "model_not_found", "Unknown model "+strconv.Quote(req.Model)+".")
+		return
+	}
+	if !key.AllowsModel(req.Model) {
+		s.reject(w, rec, http.StatusForbidden, "invalid_request_error", "model_not_allowed", "This API key may not use model "+strconv.Quote(req.Model)+".")
 		return
 	}
 

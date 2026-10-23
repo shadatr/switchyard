@@ -7,6 +7,7 @@ import (
 )
 
 const validYAML = `
+auth: { enabled: false }
 providers:
   - name: openai
     type: openai
@@ -129,6 +130,16 @@ models: [{ alias: a, targets: [{ provider: p, model: m }] }]
 				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestAuthRequiresPostgres(t *testing.T) {
+	y := strings.Replace(validYAML, "auth: { enabled: false }", "postgres: { dsn_env: PG }", 1)
+	if _, _, err := Parse([]byte(y), env(map[string]string{"OPENAI_API_KEY": "x"})); err == nil || !strings.Contains(err.Error(), "postgres.dsn_env") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, _, err := Parse([]byte(y), env(map[string]string{"OPENAI_API_KEY": "x", "PG": "postgres://"})); err != nil {
+		t.Fatalf("err = %v", err)
 	}
 }
 

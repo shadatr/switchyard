@@ -55,6 +55,17 @@ At 10,000 streaming rps (200,000 SSE events/s) the **baseline itself** degrades 
 - **Client-observed added median latency is ≤ 0.31 ms** at every sustainable rate.
 - Streaming is sustained at **7,500 rps × 20 tokens = 150,000 SSE events/s** with zero errors on a single laptop shared with the load generator and the upstream.
 
+## Phase 4 — with API-key authentication (`bench/switchyard.bench-auth.yaml`)
+
+Run `20261023-123624`, 5,000 rps. Overhead is measured from request arrival, so it now **includes** authentication (SHA-256 of the key + in-memory LRU lookup; Postgres is only hit on a cache miss).
+
+| Mode | Target rps | Achieved rps | Errors | Baseline p50 / p99 (ms) | Gateway p50 / p99 (ms) | Added p50 / p99 (ms) | Self-measured overhead p50 / p95 / p99 (ms) |
+|---|---:|---:|---:|---|---|---|---|
+| nonstream | 5000 | 5000 | 0 | 0.09 / 0.14 | 0.13 / 0.35 | +0.04 / +0.21 | 0.005 / 0.010 / 0.028 |
+| stream | 5000 | 5000 | 0 | 0.13 / 0.33 | 0.17 / 0.55 | +0.03 / +0.22 | 0.007 / 0.025 / 0.067 |
+
+Self-measured p99 overhead: **0.028 ms with auth vs 0.023 ms without** (phase 3, run B) — authentication costs ≈ 5 µs at p99.
+
 ## Optimization log
 
 ### 1. Flush coalescing for SSE (phase 3)

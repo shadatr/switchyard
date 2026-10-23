@@ -2,17 +2,20 @@
 package server
 
 import (
-	"crypto/subtle"
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/shadatr/switchyard/internal/api"
+	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/store"
 )
 
 // Response headers set on every chat response.
@@ -23,13 +26,51 @@ const (
 	HeaderAttempts  = "X-Switchyard-Attempts"
 )
 
+// Authenticator resolves a bearer token to a key record.
+type Authenticator interface {
+	Authenticate(ctx context.Context, plaintext string) (*store.Key, error)
+}
+
 // Deps are the collaborators the server needs.
 type Deps struct {
 	Config    *config.Config
 	Providers map[string]provider.Provider
 	Metrics   *metrics.Metrics
 	Logger    *slog.Logger
-	DevKey    string // temporary static API key (phase 2); empty disables auth
+	Auth      Authenticator // nil disables authentication (benchmarks only)
+}
+
+// anonymousKey is used when authentication is disabled.
+var anonymousKey = &store.Key{ID: "anonymous", ProjectID: "default", ProjectName: "default", Name: "anonymous"}
+
+type ctxKey struct{}
+type ctxStart struct{}
+
+// timed records the arrival time before any middleware runs so overhead
+// measurements include authentication.
+func (s *Server) timed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxStart{}, s.now())))
+	})
+}
+
+func (s *Server) startTime(ctx context.Context) time.Time {
+	if t, ok := ctx.Value(ctxStart{}).(time.Time); ok {
+		return t
+	}
+	return s.now()
+}
+
+func withKey(ctx context.Context, k *store.Key) context.Context {
+	return context.WithValue(ctx, ctxKey{}, k)
+}
+
+// KeyFrom returns the authenticated key for the request.
+func KeyFrom(ctx context.Context) *store.Key {
+	if k, ok := ctx.Value(ctxKey{}).(*store.Key); ok {
+		return k
+	}
+	return anonymousKey
 }
 
 // Server serves the gateway API.
@@ -39,7 +80,7 @@ type Server struct {
 	models    map[string]config.Model
 	metrics   *metrics.Metrics
 	log       *slog.Logger
-	devKey    []byte
+	auth      Authenticator
 	now       func() time.Time
 }
 
@@ -51,7 +92,7 @@ func New(d Deps) *Server {
 		models:    make(map[string]config.Model, len(d.Config.Models)),
 		metrics:   d.Metrics,
 		log:       d.Logger,
-		devKey:    []byte(d.DevKey),
+		auth:      d.Auth,
 		now:       time.Now,
 	}
 	if s.log == nil {
@@ -76,21 +117,35 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.Handle("GET /metrics", s.metrics.Handler())
-	mux.Handle("POST /v1/chat/completions", s.auth(http.HandlerFunc(s.handleChat)))
-	mux.Handle("GET /v1/models", s.auth(http.HandlerFunc(s.handleModels)))
+	mux.Handle("POST /v1/chat/completions", s.timed(s.authenticate(http.HandlerFunc(s.handleChat))))
+	mux.Handle("GET /v1/models", s.authenticate(http.HandlerFunc(s.handleModels)))
 	return mux
 }
 
-func (s *Server) auth(next http.Handler) http.Handler {
+func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.devKey) > 0 {
-			key, ok := bearer(r)
-			if !ok || subtle.ConstantTimeCompare([]byte(key), s.devKey) != 1 {
-				writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "Invalid API key.")
-				return
-			}
+		if s.auth == nil {
+			next.ServeHTTP(w, r)
+			return
 		}
-		next.ServeHTTP(w, r)
+		token, ok := bearer(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "Missing API key. Send it as 'Authorization: Bearer sy-...'.")
+			return
+		}
+		k, err := s.auth.Authenticate(r.Context(), token)
+		switch {
+		case errors.Is(err, auth.ErrUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "api_error", "auth_unavailable", "Authentication is temporarily unavailable.")
+			return
+		case errors.Is(err, auth.ErrDisabled):
+			writeError(w, http.StatusUnauthorized, "invalid_request_error", "api_key_disabled", "This API key is disabled.")
+			return
+		case err != nil:
+			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "Invalid API key.")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withKey(r.Context(), k)))
 	})
 }
 
@@ -103,7 +158,8 @@ func bearer(r *http.Request) (string, bool) {
 	return strings.TrimSpace(h[len(p):]), true
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	key := KeyFrom(r.Context())
 	type model struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -113,8 +169,11 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Object string  `json:"object"`
 		Data   []model `json:"data"`
 	}{Object: "list"}
+	out.Data = []model{}
 	for _, m := range s.cfg.Models {
-		out.Data = append(out.Data, model{ID: m.Alias, Object: "model", OwnedBy: "switchyard"})
+		if key.AllowsModel(m.Alias) {
+			out.Data = append(out.Data, model{ID: m.Alias, Object: "model", OwnedBy: "switchyard"})
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

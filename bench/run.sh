@@ -5,12 +5,14 @@
 # overhead histogram. Results land in bench/results/<timestamp>/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -f .env ] && { set -a; . ./.env; set +a; }
 
 RATES="${RATES:-1000 5000 7500}"
 DURATION="${DURATION:-20s}"
 WARMUP="${WARMUP:-3s}"
 TOKENS="${TOKENS:-20}"
 CONFIG="${CONFIG:-bench/switchyard.bench.yaml}"
+KEY="${KEY:-}"            # API key when the config has auth enabled
 OUT="bench/results/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 
@@ -44,7 +46,7 @@ for mode in nonstream stream; do
     echo "== $mode @ ${rps} rps: gateway"
     start_gateway
     ./bin/loadgen -url http://127.0.0.1:8787/v1/chat/completions -model mock-fast -stream="$sflag" \
-      -rps "$rps" -duration "$DURATION" -warmup "$WARMUP" -label "gateway-$mode-$rps" \
+      -rps "$rps" -duration "$DURATION" -warmup "$WARMUP" -label "gateway-$mode-$rps" -key "$KEY" \
       -out "$OUT/gateway-$mode-$rps.json" >/dev/null
     curl -s 127.0.0.1:8787/metrics >"$OUT/gateway-$mode-$rps.metrics"
   done

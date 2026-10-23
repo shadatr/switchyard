@@ -28,6 +28,7 @@ const (
 type Config struct {
 	Server     Server           `yaml:"server"`
 	Admin      Admin            `yaml:"admin"`
+	Auth       Auth             `yaml:"auth"`
 	Redis      Redis            `yaml:"redis"`
 	Postgres   Postgres         `yaml:"postgres"`
 	ClickHouse ClickHouse       `yaml:"clickhouse"`
@@ -50,6 +51,15 @@ type Server struct {
 type Admin struct {
 	TokenEnv string `yaml:"token_env"`
 }
+
+// Auth controls API key authentication. Disabling it is only meant for
+// local benchmarks of the bare proxy path.
+type Auth struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// IsEnabled defaults to true.
+func (a Auth) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 type Redis struct {
 	Addr     string        `yaml:"addr"`
@@ -291,6 +301,9 @@ func (c *Config) validate(getenv func(string) string) ([]string, error) {
 		}
 	}
 
+	if c.Auth.IsEnabled() && (c.Postgres.DSNEnv == "" || getenv(c.Postgres.DSNEnv) == "") {
+		errs = append(errs, errors.New("auth is enabled but postgres.dsn_env is not set (or the variable is empty)"))
+	}
 	if c.Routing.MaxAttempts < 1 {
 		errs = append(errs, errors.New("routing.max_attempts must be >= 1"))
 	}

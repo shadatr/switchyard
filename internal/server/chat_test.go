@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/shadatr/switchyard/internal/api"
+	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/mockllm"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/provider/openai"
 	"github.com/shadatr/switchyard/internal/sse"
+	"github.com/shadatr/switchyard/internal/store"
 )
 
 type harness struct {
@@ -25,7 +27,31 @@ type harness struct {
 	gateway string
 }
 
-func newHarness(t *testing.T, opts mockllm.Options, devKey string) *harness {
+type fakeAuth map[string]*store.Key
+
+func (f fakeAuth) Authenticate(_ context.Context, k string) (*store.Key, error) {
+	if k == "sy-unavailable" {
+		return nil, auth.ErrUnavailable
+	}
+	key, ok := f[k]
+	switch {
+	case !ok:
+		return nil, auth.ErrInvalidKey
+	case key.Disabled:
+		return nil, auth.ErrDisabled
+	}
+	return key, nil
+}
+
+// testKeys: "sy-secret" may use everything, "sy-limited" only "other",
+// "sy-off" is disabled.
+var testKeys = fakeAuth{
+	"sy-secret":  {ID: "k1", ProjectID: "p1"},
+	"sy-limited": {ID: "k2", ProjectID: "p1", AllowedModels: []string{"other"}},
+	"sy-off":     {ID: "k3", ProjectID: "p1", Disabled: true},
+}
+
+func newHarness(t *testing.T, opts mockllm.Options, withAuth bool) *harness {
 	t.Helper()
 	m := mockllm.New(opts)
 	up := httptest.NewServer(m.Handler())
@@ -38,7 +64,11 @@ func newHarness(t *testing.T, opts mockllm.Options, devKey string) *harness {
 		Providers: []config.Provider{pcfg},
 		Models:    []config.Model{{Alias: "fast", Strategy: config.StrategyPriority, Targets: []config.Target{{Provider: "mock", Model: "mock-a"}}}},
 	}
-	s := New(Deps{Config: cfg, Providers: map[string]provider.Provider{"mock": openai.New(pcfg, "")}, DevKey: devKey})
+	d := Deps{Config: cfg, Providers: map[string]provider.Provider{"mock": openai.New(pcfg, "")}}
+	if withAuth {
+		d.Auth = testKeys
+	}
+	s := New(d)
 	gw := httptest.NewServer(s.Handler())
 	t.Cleanup(gw.Close)
 	return &harness{mock: m, mockURL: up.URL, gateway: gw.URL}
@@ -86,7 +116,7 @@ func streamText(t *testing.T, r io.Reader) (text string, usage *api.Usage, done 
 }
 
 func TestNonStreamMatchesDirect(t *testing.T) {
-	h := newHarness(t, mockllm.Options{Tokens: 8}, "")
+	h := newHarness(t, mockllm.Options{Tokens: 8}, false)
 	body := `{"model":"fast","messages":[{"role":"user","content":"hello"}],"temperature":0}`
 	resp := do(t, context.Background(), h.gateway, "", body)
 	if resp.StatusCode != 200 {
@@ -114,7 +144,7 @@ func TestNonStreamMatchesDirect(t *testing.T) {
 }
 
 func TestStreamMatchesDirectAndHidesUnrequestedUsage(t *testing.T) {
-	h := newHarness(t, mockllm.Options{Tokens: 12}, "")
+	h := newHarness(t, mockllm.Options{Tokens: 12}, false)
 
 	resp := do(t, context.Background(), h.gateway, "", `{"model":"fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
@@ -136,7 +166,7 @@ func TestStreamMatchesDirectAndHidesUnrequestedUsage(t *testing.T) {
 }
 
 func TestClientCancelClosesUpstream(t *testing.T) {
-	h := newHarness(t, mockllm.Options{Tokens: 1000, ITL: 10 * time.Millisecond}, "")
+	h := newHarness(t, mockllm.Options{Tokens: 1000, ITL: 10 * time.Millisecond}, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	resp := do(t, ctx, h.gateway, "", `{"model":"fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 
@@ -173,7 +203,7 @@ func TestUpstreamErrorsMapped(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t, mockllm.Options{ErrorRate: 1, ErrorStatus: tt.status}, "")
+			h := newHarness(t, mockllm.Options{ErrorRate: 1, ErrorStatus: tt.status}, false)
 			for _, stream := range []string{"false", "true"} {
 				resp := do(t, context.Background(), h.gateway, "", `{"model":"fast","stream":`+stream+`,"messages":[{"role":"user","content":"hi"}]}`)
 				if resp.StatusCode != tt.wantStatus {
@@ -220,7 +250,7 @@ func TestMidStreamFailureReportedInBand(t *testing.T) {
 }
 
 func TestValidationAndAuth(t *testing.T) {
-	h := newHarness(t, mockllm.Options{Tokens: 1}, "sy-secret")
+	h := newHarness(t, mockllm.Options{Tokens: 1}, true)
 	cases := []struct {
 		key, body  string
 		wantStatus int
@@ -231,6 +261,9 @@ func TestValidationAndAuth(t *testing.T) {
 		{"sy-secret", `{"model":"fast","messages":[]}`, 400},
 		{"sy-secret", `{"model":"nope","messages":[{"role":"user","content":"x"}]}`, 404},
 		{"sy-secret", `{"model":"fast","messages":[{"role":"user","content":"x"}]}`, 200},
+		{"sy-limited", `{"model":"fast","messages":[{"role":"user","content":"x"}]}`, 403},
+		{"sy-off", `{"model":"fast","messages":[{"role":"user","content":"x"}]}`, 401},
+		{"sy-unavailable", `{"model":"fast","messages":[{"role":"user","content":"x"}]}`, 503},
 	}
 	for _, c := range cases {
 		resp := do(t, context.Background(), h.gateway, c.key, c.body)
@@ -244,8 +277,23 @@ func TestValidationAndAuth(t *testing.T) {
 	}
 }
 
+func TestModelsFilteredByKey(t *testing.T) {
+	h := newHarness(t, mockllm.Options{Tokens: 1}, true)
+	req, _ := http.NewRequest(http.MethodGet, h.gateway+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sy-limited")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(b), `"fast"`) {
+		t.Errorf("limited key must not see model fast: %s", b)
+	}
+}
+
 func TestModelsAndMetrics(t *testing.T) {
-	h := newHarness(t, mockllm.Options{Tokens: 1}, "")
+	h := newHarness(t, mockllm.Options{Tokens: 1}, false)
 	resp, err := http.Get(h.gateway + "/v1/models")
 	if err != nil {
 		t.Fatal(err)

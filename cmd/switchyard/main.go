@@ -13,14 +13,24 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/provider/openai"
 	"github.com/shadatr/switchyard/internal/server"
+	"github.com/shadatr/switchyard/internal/store"
 )
 
 func main() {
+	_ = config.LoadDotEnv(".env")
+	if len(os.Args) > 1 && os.Args[1] == "keys" {
+		if err := runKeys(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("switchyard exited", "err", err)
 		os.Exit(1)
@@ -47,13 +57,28 @@ func run() error {
 		return err
 	}
 
-	srv := server.New(server.Deps{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	deps := server.Deps{
 		Config:    cfg,
 		Providers: providers,
 		Metrics:   metrics.New(),
 		Logger:    slog.Default(),
-		DevKey:    os.Getenv("SWITCHYARD_DEV_KEY"),
-	})
+	}
+	if cfg.Auth.IsEnabled() {
+		st, err := openStore(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		authn := auth.New(st, auth.DefaultOptions(), slog.Default())
+		go authn.RunTouch(ctx)
+		deps.Auth = authn
+	} else {
+		slog.Warn("authentication is DISABLED (auth.enabled: false) — do not expose this instance")
+	}
+	srv := server.New(deps)
 
 	hs := &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -64,9 +89,6 @@ func run() error {
 	if *debugAddr != "" {
 		go serveDebug(*debugAddr)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -87,6 +109,18 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
 	return hs.Shutdown(shutdownCtx)
+}
+
+func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
+	st, err := store.Open(ctx, os.Getenv(cfg.Postgres.DSNEnv))
+	if err != nil {
+		return nil, err
+	}
+	if err := st.Migrate(ctx); err != nil {
+		st.Close()
+		return nil, fmt.Errorf("migrate postgres: %w", err)
+	}
+	return st, nil
 }
 
 func buildProviders(cfg *config.Config) (map[string]provider.Provider, error) {
