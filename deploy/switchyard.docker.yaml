@@ -1,0 +1,59 @@
+# Config used inside Docker (docker compose --profile full up). Service
+# hostnames refer to the compose network. Secrets come from the environment.
+server:
+  addr: ":8787"
+
+admin:
+  token_env: SWITCHYARD_ADMIN_TOKEN
+  cors_origins: ["http://localhost:3100", "http://127.0.0.1:3100"]
+
+redis:
+  addr: "redis:6379"
+  timeout: 50ms
+  fail_open: true
+
+postgres:
+  dsn_env: SWITCHYARD_PG_DSN
+
+clickhouse:
+  addr: "clickhouse:9000"
+  database: switchyard
+  username: default
+  password_env: SWITCHYARD_CH_PASSWORD
+
+providers:
+  - name: mock
+    type: openai
+    base_url: http://mockllm:9797/v1
+
+models:
+  - alias: mock-fast
+    strategy: weighted
+    targets:
+      - { provider: mock, model: mock-a, weight: 80 }
+      - { provider: mock, model: mock-b, weight: 20 }
+
+routing:
+  max_attempts: 3
+  retry_backoff: { base: 100ms, max: 1s, jitter: true }
+  retry_on: [429, 500, 502, 503, 504, 529, timeout, connect_error]
+  first_byte_timeout: 20s
+
+breaker:
+  failure_rate: 0.5
+  min_requests: 20
+  window: 10s
+  open_duration: 30s
+
+cache:
+  enabled: true
+  ttl: 10m
+  only_when_temperature_zero: true
+
+pricing:
+  "mock/mock-a": { input: 0.10, output: 0.40 }
+  "mock/mock-b": { input: 0.20, output: 0.80 }
+
+tracing:
+  enabled: false
+  endpoint: http://jaeger:4318/v1/traces

@@ -39,6 +39,7 @@ type Config struct {
 	Cache      Cache            `yaml:"cache"`
 	Pricing    map[string]Price `yaml:"pricing"`
 	LogSink    LogSink          `yaml:"logsink"`
+	Tracing    Tracing          `yaml:"tracing"`
 }
 
 type Server struct {
@@ -139,6 +140,13 @@ type Price struct {
 	Output float64 `yaml:"output"`
 }
 
+// Tracing configures OpenTelemetry export (OTLP over HTTP).
+type Tracing struct {
+	Enabled     bool    `yaml:"enabled"`
+	Endpoint    string  `yaml:"endpoint"`     // e.g. http://localhost:4318/v1/traces
+	SampleRatio float64 `yaml:"sample_ratio"` // 0..1, default 1
+}
+
 type LogSink struct {
 	QueueSize     int           `yaml:"queue_size"`
 	BatchSize     int           `yaml:"batch_size"`
@@ -225,6 +233,12 @@ func (c *Config) ApplyDefaults() {
 	setInt(&c.Breaker.HalfOpenMaxRequests, 1)
 	setDur(&c.Cache.TTL, 10*time.Minute)
 	setInt(&c.Cache.MaxEntryBytes, 256<<10)
+	if c.Tracing.Endpoint == "" {
+		c.Tracing.Endpoint = "http://localhost:4318/v1/traces"
+	}
+	if c.Tracing.SampleRatio == 0 {
+		c.Tracing.SampleRatio = 1
+	}
 	setInt(&c.LogSink.QueueSize, 100_000)
 	setInt(&c.LogSink.BatchSize, 5_000)
 	setDur(&c.LogSink.FlushInterval, 500*time.Millisecond)

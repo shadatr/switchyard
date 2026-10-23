@@ -31,7 +31,11 @@ import (
 	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/server"
 	"github.com/shadatr/switchyard/internal/store"
+	"github.com/shadatr/switchyard/internal/tracing"
 )
+
+// version is set at build time: -ldflags "-X main.version=v0.1.0".
+var version = "dev"
 
 func main() {
 	_ = config.LoadDotEnv(".env")
@@ -54,6 +58,7 @@ func run() error {
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.Info("starting switchyard", "version", version)
 
 	cfg, warnings, err := config.Load(*configPath)
 	if err != nil {
@@ -70,6 +75,16 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracing, err := tracing.Setup(ctx, cfg.Tracing, version)
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(sctx)
+	}()
 	var background sync.WaitGroup // goroutines that must finish before exit (log drain)
 
 	m := metrics.New()

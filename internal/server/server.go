@@ -22,6 +22,11 @@ import (
 	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/store"
+	"github.com/shadatr/switchyard/internal/tracing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Response headers set on every chat response.
@@ -71,7 +76,10 @@ type ctxStart struct{}
 // measurements include authentication.
 func (s *Server) timed(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxStart{}, s.now())))
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := tracing.Tracer().Start(ctx, "gateway.request", trace.WithSpanKind(trace.SpanKindServer))
+		defer span.End()
+		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxStart{}, s.now())))
 	})
 }
 
@@ -164,7 +172,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "Missing API key. Send it as 'Authorization: Bearer sy-...'.")
 			return
 		}
+		_, span := tracing.Tracer().Start(r.Context(), "auth")
 		k, err := s.auth.Authenticate(r.Context(), token)
+		span.End()
 		switch {
 		case errors.Is(err, auth.ErrUnavailable):
 			writeError(w, http.StatusServiceUnavailable, "api_error", "auth_unavailable", "Authentication is temporarily unavailable.")

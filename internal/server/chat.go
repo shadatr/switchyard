@@ -23,6 +23,11 @@ import (
 	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/sse"
 	"github.com/shadatr/switchyard/internal/tokens"
+	"github.com/shadatr/switchyard/internal/tracing"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // record captures everything known about one chat request; it feeds metrics
@@ -59,7 +64,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(HeaderRequestID, rec.RequestID)
 	key := KeyFrom(r.Context())
 	rec.KeyID, rec.ProjectID = key.ID, key.ProjectID
-	defer s.finish(rec)
+	defer s.finish(r.Context(), rec)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes))
 	if err != nil {
@@ -92,7 +97,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	reserved := 0
 	if s.limiter != nil {
+		_, span := tracing.Tracer().Start(r.Context(), "ratelimit.admit")
 		d := s.limiter.Admit(r.Context(), key, tokens.Estimate(req.PromptText()))
+		span.SetAttributes(attribute.Bool("allowed", d.Allowed), attribute.Bool("degraded", d.Degraded))
+		span.End()
 		setRateLimitHeaders(w.Header(), d)
 		if !d.Allowed {
 			s.rejectLimited(w, rec, d)
@@ -112,7 +120,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	cacheKey, cacheable := s.cache.Key(key.ProjectID, &req)
 	if cacheable {
+		_, span := tracing.Tracer().Start(r.Context(), "cache.lookup")
 		e, err := s.cache.Get(r.Context(), cacheKey)
+		span.SetAttributes(attribute.Bool("hit", e != nil))
+		span.End()
 		switch {
 		case err != nil:
 			rec.Cache, cacheKey = "bypass", ""
@@ -226,9 +237,15 @@ func (s *Server) attempt(ctx context.Context, rec *record, model config.Model, f
 		}
 		rec.Target, rec.Attempts = t.Key(), attempts
 
+		actx, span := tracing.Tracer().Start(ctx, "upstream.attempt", trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(attribute.String("target", t.Key()), attribute.Int("attempt", attempts)))
 		up := s.now()
-		err := fn(ctx, t, s.providers[t.Provider])
+		err := fn(actx, t, s.providers[t.Provider])
 		rec.Upstream += s.now().Sub(up)
+		if err != nil {
+			span.SetStatus(codes.Error, errorCode(err))
+		}
+		span.End()
 		if err == nil {
 			b.Success()
 			return nil
@@ -499,8 +516,17 @@ func errorCode(err error) string {
 	return provider.CodeUpstream
 }
 
-func (s *Server) finish(rec *record) {
+func (s *Server) finish(ctx context.Context, rec *record) {
 	rec.Latency = s.now().Sub(rec.Start)
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(attribute.String("request_id", rec.RequestID), attribute.String("model", rec.Alias),
+			attribute.String("target", rec.Target), attribute.Int("status", rec.Status), attribute.String("cache", rec.Cache),
+			attribute.Int("prompt_tokens", rec.PromptTokens), attribute.Int("completion_tokens", rec.CompletionTokens),
+			attribute.Float64("cost_usd", rec.CostUSD), attribute.Int("attempts", rec.Attempts))
+		if rec.Status >= 400 {
+			span.SetStatus(codes.Error, rec.ErrorCode)
+		}
+	}
 	if rec.TTFT == 0 {
 		rec.TTFT = rec.Latency
 	}

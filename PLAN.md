@@ -22,7 +22,7 @@ This document is the single source of truth. An engineer (human or AI) should be
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Language | Go 1.25 | module `github.com/shadatr/switchyard` |
+| Language | Go 1.26 | module `github.com/shadatr/switchyard` |
 | HTTP | `net/http` (Go 1.22+ pattern routing) | no web framework |
 | Config | YAML via `gopkg.in/yaml.v3` + env overrides (`SWITCHYARD_*`) | |
 | Redis | `github.com/redis/go-redis/v9`, Redis 7 | rate limits, budgets, cache |

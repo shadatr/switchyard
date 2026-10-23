@@ -41,6 +41,36 @@ services:
       timeout: 2s
       retries: 30
 
+  # Gateway + mock upstream in containers: docker compose --profile full up -d --build
+  switchyard:
+    profiles: ["full"]
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    image: switchyard:dev
+    environment:
+      SWITCHYARD_PG_DSN: postgres://switchyard:switchyard@postgres:5432/switchyard?sslmode=disable
+      SWITCHYARD_CH_PASSWORD: switchyard
+      SWITCHYARD_ADMIN_TOKEN: ${SWITCHYARD_ADMIN_TOKEN:-change-me}
+    ports: ["8787:8787"]
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      mockllm: { condition: service_started }
+
+  mockllm:
+    profiles: ["full"]
+    image: switchyard:dev
+    entrypoint: ["/mockllm"]
+    command: ["-addr", ":9797", "-ttft", "150ms", "-itl", "15ms", "-tokens", "60", "-jitter", "0.3"]
+
+  # Tracing UI (optional): docker compose --profile tracing up -d
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: ["tracing"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["4318:4318", "16686:16686"]
+
 volumes:
   pgdata:
   chdata:

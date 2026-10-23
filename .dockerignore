@@ -1,0 +1,7 @@
+bin/
+.env
+web/node_modules/
+web/.next/
+bench/results/
+.git/
+*.pprof
