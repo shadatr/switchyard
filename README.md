@@ -13,6 +13,8 @@ client.chat.completions.create(model="fast", messages=[{"role": "user", "content
 
 `fast` is an alias you define — for example "OpenAI first, fall back to Anthropic" — and Switchyard handles the rest.
 
+**[Live demo →](https://switchyard-flame.vercel.app)** — the dashboard running on data recorded from a real Switchyard gateway (simulated upstreams, no sign-in needed).
+
 ![Dashboard overview](docs/screenshots/overview.png)
 
 ## Highlights
