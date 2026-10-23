@@ -222,8 +222,9 @@ type ChunkChoice struct {
 }
 
 type Delta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 // ContentText returns the concatenated delta content of all choices.

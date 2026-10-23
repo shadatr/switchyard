@@ -8,6 +8,8 @@ STATICCHECK := $(shell $(GO) env GOPATH)/bin/staticcheck
 build:
 	$(GO) build -o bin/switchyard ./cmd/switchyard
 	$(GO) build -o bin/mockllm ./cmd/mockllm
+	$(GO) build -o bin/loadgen ./cmd/loadgen
+	$(GO) build -o bin/benchreport ./cmd/benchreport
 
 test:
 	$(GO) test -race ./...

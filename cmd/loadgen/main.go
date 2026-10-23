@@ -57,13 +57,14 @@ func main() {
 	key := flag.String("key", "", "bearer token")
 	maxInflight := flag.Int("max-inflight", 20000, "concurrency cap")
 	label := flag.String("label", "", "label stored in the result")
+	temperature := flag.Float64("temperature", 0.7, "temperature field (0 makes requests cacheable)")
 	out := flag.String("out", "", "write JSON result to this file")
 	flag.Parse()
 
 	body, _ := json.Marshal(map[string]any{
 		"model":       *model,
 		"stream":      *stream,
-		"temperature": 0.7,
+		"temperature": *temperature,
 		"messages":    []map[string]string{{"role": "user", "content": "Benchmark prompt: say something short."}},
 	})
 

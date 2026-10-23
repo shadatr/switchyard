@@ -105,6 +105,19 @@ Enforcing limits costs one pipelined Redis round trip per request (RPM bucket + 
 
 Correctness (see `internal/ratelimit` tests, run against both miniredis and the real Redis): 100 goroutines × 100 requests against a 600 rpm key never exceed 600 + refill; a 30-rpm key over HTTP allowed exactly 30 of 35 requests and returned `Retry-After: 2`; with Redis stopped, requests kept succeeding (fail open) and `switchyard_dependency_errors_total{dep="redis"}` counted every degraded request while the warning was logged once.
 
+## Phase 7 — response cache
+
+Upstream: mockllm with TTFT 200 ms, 15 ms/token, 50 tokens (≈ 950 ms per answer). 5,000 rps of an identical `temperature: 0` request for 15 s (+2 s warm-up), auth + limits + cache enabled (`bench/switchyard.bench-cache.yaml`).
+
+| Mode | OK | Client p50 | Client p99 |
+|---|---:|---:|---:|
+| non-stream, cache hit | 75,000 / 75,000 | 0.19 ms | 1.96 ms |
+| stream (replayed), cache hit | 75,000 / 75,000 | 0.20 ms | 1.17 ms |
+
+Cache counters for the whole run: 165,259 hits, 4,741 misses, 4,741 stores.
+
+**Known limitation — cache stampede.** The 4,741 misses are the requests that arrived during the first ~0.95 s, before the first answer had been stored: every one of them went upstream. Request coalescing (identical in-flight misses wait for a single upstream call) would reduce that to one upstream call; it is on the roadmap.
+
 ## Optimization log
 
 ### 1. Flush coalescing for SSE (phase 3)

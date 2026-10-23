@@ -526,4 +526,4 @@ Acceptance
 - Clean repo: CI green, race-free, documented, runnable in 5 minutes.
 
 ## 10. Out of scope (v0.1)
-Semantic/embedding cache, prompt management, multi-tenant SSO for the dashboard, Kubernetes manifests, request/response body storage (privacy), image/audio endpoints. Listed in README "Roadmap".
+Request coalescing for cache misses (stampede protection — measured in phase 7), semantic/embedding cache, prompt management, multi-tenant SSO for the dashboard, Kubernetes manifests, request/response body storage (privacy), image/audio endpoints. Listed in README "Roadmap".

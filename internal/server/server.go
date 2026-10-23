@@ -12,6 +12,7 @@ import (
 
 	"github.com/shadatr/switchyard/internal/api"
 	"github.com/shadatr/switchyard/internal/auth"
+	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/pricing"
@@ -48,6 +49,7 @@ type Deps struct {
 	Logger    *slog.Logger
 	Auth      Authenticator // nil disables authentication (benchmarks only)
 	Limiter   Limiter       // nil disables rate limits and budgets
+	Cache     *cache.Cache  // nil disables the response cache
 }
 
 // anonymousKey is used when authentication is disabled.
@@ -92,6 +94,7 @@ type Server struct {
 	log       *slog.Logger
 	auth      Authenticator
 	limiter   Limiter
+	cache     *cache.Cache
 	pricing   pricing.Table
 	now       func() time.Time
 }
@@ -105,6 +108,7 @@ func New(d Deps) *Server {
 		log:       d.Logger,
 		auth:      d.Auth,
 		limiter:   d.Limiter,
+		cache:     d.Cache,
 		pricing:   pricing.Table(d.Config.Pricing),
 		now:       time.Now,
 	}

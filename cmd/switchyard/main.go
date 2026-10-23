@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/shadatr/switchyard/internal/auth"
+	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
@@ -82,6 +83,9 @@ func run() error {
 			slog.Warn("redis not reachable at startup; limits will fail open until it is", "addr", cfg.Redis.Addr, "err", err)
 		}
 		deps.Limiter = ratelimit.New(rdb, cfg.Redis.Timeout, m, slog.Default())
+		if cfg.Cache.Enabled {
+			deps.Cache = cache.New(rdb, cfg.Cache, cfg.Redis.Timeout, m)
+		}
 	}
 	if cfg.Auth.IsEnabled() {
 		st, err := openStore(ctx, cfg)

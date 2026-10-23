@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
 	"github.com/shadatr/switchyard/internal/api"
+	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/ratelimit"
@@ -86,8 +88,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, rec, http.StatusForbidden, "invalid_request_error", "model_not_allowed", "This API key may not use model "+strconv.Quote(req.Model)+".")
 		return
 	}
-	w.Header().Set(HeaderCache, rec.Cache)
-
 	reserved := 0
 	if s.limiter != nil {
 		d := s.limiter.Admit(r.Context(), key, tokens.Estimate(req.PromptText()))
@@ -98,16 +98,78 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		reserved = d.TokensReserved
 		defer func() {
+			actual := rec.PromptTokens + rec.CompletionTokens
+			if rec.Cache == "hit" {
+				actual = 0 // cached answers don't consume token quota
+			}
 			if rec.Upstream > 0 || reserved > 0 {
-				s.limiter.Settle(key, reserved, rec.PromptTokens+rec.CompletionTokens, rec.CostUSD)
+				s.limiter.Settle(key, reserved, actual, rec.CostUSD)
 			}
 		}()
 	}
 
-	if req.Stream {
-		s.serveStream(w, r, rec, &req, model)
+	cacheKey, cacheable := s.cache.Key(key.ProjectID, &req)
+	if cacheable {
+		e, err := s.cache.Get(r.Context(), cacheKey)
+		switch {
+		case err != nil:
+			rec.Cache, cacheKey = "bypass", ""
+		case e != nil:
+			rec.Cache = "hit"
+			s.metrics.Cache.WithLabelValues("hit").Inc()
+			s.serveCached(w, rec, &req, e)
+			return
+		default:
+			rec.Cache = "miss"
+		}
+		s.metrics.Cache.WithLabelValues(rec.Cache).Inc()
 	} else {
-		s.serveJSON(w, r, rec, &req, model)
+		cacheKey = ""
+	}
+	w.Header().Set(HeaderCache, rec.Cache)
+
+	if req.Stream {
+		s.serveStream(w, r, rec, &req, model, cacheKey)
+	} else {
+		s.serveJSON(w, r, rec, &req, model, cacheKey)
+	}
+}
+
+// serveCached answers from a cache entry without touching any upstream.
+func (s *Server) serveCached(w http.ResponseWriter, rec *record, req *api.ChatRequest, e *cache.Entry) {
+	h := w.Header()
+	h.Set(HeaderCache, "hit")
+	h.Set(HeaderTarget, e.Target)
+	h.Set(HeaderAttempts, "0")
+	rec.Target = e.Target
+	rec.PromptTokens, rec.CompletionTokens = e.Usage.PromptTokens, e.Usage.CompletionTokens
+	if !req.Stream {
+		h.Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(e.Response())
+		rec.TTFT = s.now().Sub(rec.Start)
+		return
+	}
+	sse.SetHeaders(h)
+	w.WriteHeader(http.StatusOK)
+	sw := sse.NewWriter(w)
+	for _, c := range e.Chunks(req.StreamOptions != nil && req.StreamOptions.IncludeUsage) {
+		if sw.Write(c) != nil {
+			rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
+			return
+		}
+	}
+	_ = sw.WriteDone()
+	rec.TTFT = s.now().Sub(rec.Start)
+}
+
+func (s *Server) storeInCache(key string, rec *record, e *cache.Entry) {
+	if key == "" || rec.Status != http.StatusOK {
+		return
+	}
+	e.Target = rec.Target
+	if s.cache.Put(key, e) {
+		s.metrics.Cache.WithLabelValues("store").Inc()
 	}
 }
 
@@ -186,7 +248,7 @@ func (s *Server) attempt(ctx context.Context, rec *record, model config.Model, f
 	return lastErr
 }
 
-func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model) {
+func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model, cacheKey string) {
 	var resp *api.ChatResponse
 	err := s.attempt(r.Context(), rec, model, func(ctx context.Context, t config.Target, p provider.Provider) error {
 		var err error
@@ -217,6 +279,15 @@ func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
 	rec.TTFT = s.now().Sub(rec.Start)
+
+	if cacheKey != "" && len(resp.Choices) == 1 && resp.Choices[0].Message.Extra["tool_calls"] == nil {
+		e := &cache.Entry{Model: resp.Model, Content: resp.Choices[0].Message.Text(), Raw: resp.Raw,
+			Usage: api.Usage{PromptTokens: rec.PromptTokens, CompletionTokens: rec.CompletionTokens, TotalTokens: rec.PromptTokens + rec.CompletionTokens}}
+		if f := resp.Choices[0].FinishReason; f != nil {
+			e.FinishReason = *f
+		}
+		s.storeInCache(cacheKey, rec, e)
+	}
 }
 
 // openStream starts a stream and waits for its first chunk, falling back to
@@ -260,7 +331,7 @@ func (s *Server) openStream(ctx context.Context, rec *record, req *api.ChatReque
 	return st, first, release, err
 }
 
-func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model) {
+func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model, cacheKey string) {
 	ctx := r.Context()
 	clientWantsUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 
@@ -281,12 +352,33 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 	var usage *api.Usage
 	completionBytes := 0
 	firstContentPending := false // first content chunk written but not yet flushed
+
+	// Accumulate the answer for the cache; give up on tool calls, multiple
+	// choices or oversized answers.
+	var cached *cache.Entry
+	var content strings.Builder
+	if cacheKey != "" {
+		cached = &cache.Entry{Model: first.Model}
+	}
+	complete := false
 	clientGone := func() { rec.Status, rec.ErrorCode = 499, provider.CodeCanceled }
 
 	c := first
 	for {
 		if c.Usage != nil {
 			usage = c.Usage
+		}
+		if cached != nil {
+			for _, ch := range c.Choices {
+				if ch.Index != 0 || len(ch.Delta.ToolCalls) > 0 || content.Len() > s.cfg.Cache.MaxEntryBytes {
+					cached = nil
+					break
+				}
+				content.WriteString(ch.Delta.Content)
+				if ch.FinishReason != nil {
+					cached.FinishReason = *ch.FinishReason
+				}
+			}
 		}
 		usageOnly := c.Usage != nil && len(c.Choices) == 0
 		if !usageOnly || clientWantsUsage {
@@ -320,6 +412,7 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 		c, err = st.Next()
 		if errors.Is(err, io.EOF) {
 			_ = sw.WriteDone()
+			complete = true
 			break
 		}
 		if err != nil {
@@ -342,6 +435,11 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 	rec.Upstream += s.now().Sub(upStart)
 	s.applyUsage(rec, req, usage, func() int { return completionBytes })
 	rec.CostUSD = s.pricing.Cost(rec.Target, rec.PromptTokens, rec.CompletionTokens)
+	if cached != nil && complete {
+		cached.Content = content.String()
+		cached.Usage = api.Usage{PromptTokens: rec.PromptTokens, CompletionTokens: rec.CompletionTokens, TotalTokens: rec.PromptTokens + rec.CompletionTokens}
+		s.storeInCache(cacheKey, rec, cached)
+	}
 }
 
 func (s *Server) setRoutingHeaders(w http.ResponseWriter, rec *record) {
