@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"syscall"
 
 	"github.com/shadatr/switchyard/internal/config"
+	"github.com/shadatr/switchyard/internal/metrics"
+	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/provider/openai"
+	"github.com/shadatr/switchyard/internal/server"
 )
 
 func main() {
@@ -35,15 +40,22 @@ func run() error {
 		slog.Warn("config", "warning", w)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	providers, err := buildProviders(cfg)
+	if err != nil {
+		return err
+	}
+
+	srv := server.New(server.Deps{
+		Config:    cfg,
+		Providers: providers,
+		Metrics:   metrics.New(),
+		Logger:    slog.Default(),
+		DevKey:    os.Getenv("SWITCHYARD_DEV_KEY"),
 	})
 
-	srv := &http.Server{
+	hs := &http.Server{
 		Addr:              cfg.Server.Addr,
-		Handler:           mux,
+		Handler:           srv.Handler(),
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
 	}
 
@@ -53,7 +65,7 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("listening", "addr", cfg.Server.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 		close(errCh)
@@ -68,5 +80,22 @@ func run() error {
 	slog.Info("shutting down", "grace", cfg.Server.ShutdownGrace.String())
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	return hs.Shutdown(shutdownCtx)
+}
+
+func buildProviders(cfg *config.Config) (map[string]provider.Provider, error) {
+	out := make(map[string]provider.Provider, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		key := ""
+		if p.APIKeyEnv != "" {
+			key = os.Getenv(p.APIKeyEnv)
+		}
+		switch p.Type {
+		case config.ProviderOpenAI, config.ProviderMock:
+			out[p.Name] = openai.New(p, key)
+		default:
+			return nil, fmt.Errorf("provider %q: type %q is not implemented yet", p.Name, p.Type)
+		}
+	}
+	return out, nil
 }
