@@ -1,0 +1,20 @@
+# Chaos config: target A fails ~30% of requests, B is healthy.
+auth: { enabled: false }
+server: { addr: ":8787" }
+providers:
+  - { name: flaky,   type: openai, base_url: "http://127.0.0.1:9797/v1" }
+  - { name: healthy, type: openai, base_url: "http://127.0.0.1:9798/v1" }
+models:
+  - alias: chaos
+    strategy: priority
+    targets:
+      - { provider: flaky,   model: mock-a }
+      - { provider: healthy, model: mock-b }
+routing:
+  max_attempts: 3
+  retry_backoff: { base: 5ms, max: 50ms, jitter: true }
+  retry_on: [429, 500, 502, 503, 504, timeout, connect_error]
+breaker: { failure_rate: 0.5, min_requests: 20, window: 10s, open_duration: 5s }
+pricing:
+  "flaky/mock-a":   { input: 0.1, output: 0.4 }
+  "healthy/mock-b": { input: 0.1, output: 0.4 }

@@ -182,7 +182,9 @@ routing:
   first_byte_timeout: 20s
 
 breaker:
-  failure_threshold: 5              # consecutive failures → open
+  failure_rate: 0.5                 # open when ≥50% of requests fail…
+  min_requests: 20                  # …over at least 20 requests…
+  window: 10s                       # …in a sliding 10s window (10 buckets)
   open_duration: 30s                # then half-open
   half_open_max_requests: 1
 
@@ -340,7 +342,7 @@ Each provider owns one tuned `*http.Transport` (keep-alives, `MaxIdleConnsPerHos
 
 ### 6.5 Router & breaker
 - `priority`: try targets in order. `weighted`: weighted random **without replacement** for the attempt order.
-- Breaker per target: closed → (N consecutive failures) → open for `open_duration` → half-open allows `half_open_max_requests` probes → success closes, failure re-opens. Lock-free reads via `atomic`; state changes under a mutex. Exported as metric `switchyard_breaker_state{target}` (0 closed, 1 half-open, 2 open).
+- Breaker per target: closed → (failure rate ≥ `failure_rate` over ≥ `min_requests` in a sliding `window`) → open for `open_duration` → half-open allows `half_open_max_requests` probes → success closes, failure re-opens. Lock-free reads via `atomic`; state changes under a mutex. Exported as metric `switchyard_breaker_state{target}` (0 closed, 1 half-open, 2 open).
 
 ### 6.6 Log sink
 - `chan Record` of `queue_size`; `Enqueue` uses `select { case ch <- r: default: dropped++ }`.
@@ -434,7 +436,8 @@ Tasks
 3. Headers `X-Switchyard-Target`, `X-Switchyard-Attempts`.
 Acceptance
 - [ ] Table tests: primary 503 → fallback succeeds; all fail → 502 with attempts=3; 400 from upstream is **not** retried; fallback never happens after first streamed byte.
-- [ ] Breaker tests with a fake clock: opens after N, half-opens after duration, closes on success.
+- [ ] Breaker tests with a fake clock: opens at the failure-rate threshold, ignores expired buckets, half-opens after duration, closes on success.
+- [ ] *Design note (found in phase 5):* a "N consecutive failures" breaker trips healthy-ish targets under concurrency, because fast failures complete before slow successes. Use a failure **rate** over a sliding window instead.
 - [ ] Weighted distribution test: 10k picks within ±2% of weights.
 - [ ] Chaos demo: mockllm A with `--error-rate 0.3`, B healthy → client success rate ≥ 99.9% over 10k requests (script in `bench/chaos.sh`).
 Commit: `phase 5: routing and fallback`

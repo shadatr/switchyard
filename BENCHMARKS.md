@@ -66,6 +66,32 @@ Run `20261023-123624`, 5,000 rps. Overhead is measured from request arrival, so 
 
 Self-measured p99 overhead: **0.028 ms with auth vs 0.023 ms without** (phase 3, run B) — authentication costs ≈ 5 µs at p99.
 
+## Phase 5 — routing, fallback and circuit breaker
+
+### Overhead with router + breaker (run `20261023-124847`, 5,000 rps, auth enabled)
+
+| Mode | Target rps | Achieved rps | Errors | Baseline p50 / p99 (ms) | Gateway p50 / p99 (ms) | Added p50 / p99 (ms) | Self-measured overhead p50 / p95 / p99 (ms) |
+|---|---:|---:|---:|---|---|---|---|
+| nonstream | 5000 | 5000 | 0 | 0.09 / 0.14 | 0.13 / 0.32 | +0.04 / +0.19 | 0.005 / 0.010 / 0.022 |
+| stream | 5000 | 5000 | 0 | 0.14 / 0.29 | 0.17 / 0.76 | +0.03 / +0.47 | 0.007 / 0.020 / 0.063 |
+
+No measurable regression from routing and the per-request breaker bookkeeping.
+
+### Chaos: a flaky primary behind Switchyard (`bench/chaos.sh`)
+
+Two mock upstreams (TTFT 20 ms, 10 tokens); alias `chaos` routes `flaky` first, `healthy` second; 500 rps.
+
+| Scenario | Direct to primary | Through Switchyard | Notes |
+|---|---:|---:|---|
+| Primary fails 30% of requests (20 s, 10,000 req) | 71.2% success | **100.000%** success, p99 45.9 ms | Primary still serves its healthy share (6,945 req); 3,055 retried on the secondary; breaker never trips |
+| Primary fully down (12 s, 6,000 req) | 0% success | **100.000%** success, p99 44.3 ms | Breaker opens after ~20 requests; only 22 wasted attempts in total (half-open probes every 5 s) |
+
+### Finding: why the breaker counts *started* requests
+
+The first breaker design tripped after N consecutive failures. In the 30% chaos test it tripped almost immediately and kept the primary disabled for the whole run (32 of 10,000 requests reached it). Sampling the breaker every second showed it re-tripping after exactly 5 failures in every window.
+
+Cause: failures come back in ~1 ms while successes take ~40 ms, so with ~20 requests in flight the failures *complete* first and look consecutive. Switching to a failure rate over completed requests still tripped once at startup for the same reason (the first completions are all failures). The final design counts failures against requests **started** in a sliding 10 s window (10 buckets) — independent of completion order. Regression test: `TestFastFailuresDoNotTripMostlyHealthyTarget`.
+
 ## Optimization log
 
 ### 1. Flush coalescing for SSE (phase 3)

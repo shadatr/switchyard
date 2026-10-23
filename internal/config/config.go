@@ -118,8 +118,10 @@ type Backoff struct {
 }
 
 type Breaker struct {
-	FailureThreshold    int           `yaml:"failure_threshold"`
-	OpenDuration        time.Duration `yaml:"open_duration"`
+	FailureRate         float64       `yaml:"failure_rate"`  // trip at this failure ratio…
+	MinRequests         int           `yaml:"min_requests"`  // …over at least this many requests…
+	Window              time.Duration `yaml:"window"`        // …within this sliding window
+	OpenDuration        time.Duration `yaml:"open_duration"` // then reject for this long
 	HalfOpenMaxRequests int           `yaml:"half_open_max_requests"`
 }
 
@@ -161,7 +163,7 @@ func Parse(raw []byte, getenv func(string) string) (*Config, []string, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, nil, fmt.Errorf("parse config: %w", err)
 	}
-	c.applyDefaults()
+	c.ApplyDefaults()
 	c.applyEnv(getenv)
 	warnings, err := c.validate(getenv)
 	if err != nil {
@@ -170,7 +172,9 @@ func Parse(raw []byte, getenv func(string) string) (*Config, []string, error) {
 	return &c, warnings, nil
 }
 
-func (c *Config) applyDefaults() {
+// ApplyDefaults fills zero values with defaults. Parse calls it; tests that
+// build a Config by hand should call it too.
+func (c *Config) ApplyDefaults() {
 	setDur := func(d *time.Duration, v time.Duration) {
 		if *d == 0 {
 			*d = v
@@ -208,7 +212,11 @@ func (c *Config) applyDefaults() {
 	setDur(&c.Routing.RetryBackoff.Base, 100*time.Millisecond)
 	setDur(&c.Routing.RetryBackoff.Max, time.Second)
 	setDur(&c.Routing.FirstByteTimeout, 20*time.Second)
-	setInt(&c.Breaker.FailureThreshold, 5)
+	if c.Breaker.FailureRate == 0 {
+		c.Breaker.FailureRate = 0.5
+	}
+	setInt(&c.Breaker.MinRequests, 20)
+	setDur(&c.Breaker.Window, 10*time.Second)
 	setDur(&c.Breaker.OpenDuration, 30*time.Second)
 	setInt(&c.Breaker.HalfOpenMaxRequests, 1)
 	setDur(&c.Cache.TTL, 10*time.Minute)
@@ -306,6 +314,9 @@ func (c *Config) validate(getenv func(string) string) ([]string, error) {
 	}
 	if c.Routing.MaxAttempts < 1 {
 		errs = append(errs, errors.New("routing.max_attempts must be >= 1"))
+	}
+	if c.Breaker.FailureRate <= 0 || c.Breaker.FailureRate > 1 {
+		errs = append(errs, errors.New("breaker.failure_rate must be in (0, 1]"))
 	}
 	if c.LogSink.BatchSize > c.LogSink.QueueSize {
 		errs = append(errs, errors.New("logsink.batch_size must be <= logsink.queue_size"))

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,12 +15,13 @@ import (
 	"github.com/shadatr/switchyard/internal/api"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/sse"
 	"github.com/shadatr/switchyard/internal/tokens"
 )
 
 // record captures everything known about one chat request; it feeds metrics
-// now and the analytics pipeline in later phases.
+// and the analytics pipeline.
 type record struct {
 	RequestID        string
 	KeyID            string
@@ -36,8 +39,14 @@ type record struct {
 	TokensEstimated  bool
 	Latency          time.Duration
 	TTFT             time.Duration
-	Upstream         time.Duration
+	Upstream         time.Duration // time spent waiting on upstreams (all attempts)
+	Backoff          time.Duration // time spent sleeping between attempts
 }
+
+// errNoHealthyTarget is returned when every target's breaker is open.
+var errNoHealthyTarget = errors.New("no healthy target")
+
+var errFirstByteTimeout = errors.New("first byte timeout")
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	rec := &record{RequestID: ulid.Make().String(), Start: s.startTime(r.Context()), Cache: "bypass", Status: http.StatusOK}
@@ -66,7 +75,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, rec, http.StatusBadRequest, "invalid_request_error", "invalid_request", "model and messages are required.")
 		return
 	}
-	model, ok := s.models[req.Model]
+	model, ok := s.router.Model(req.Model)
 	if !ok {
 		s.reject(w, rec, http.StatusNotFound, "invalid_request_error", "model_not_found", "Unknown model "+strconv.Quote(req.Model)+".")
 		return
@@ -75,25 +84,73 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, rec, http.StatusForbidden, "invalid_request_error", "model_not_allowed", "This API key may not use model "+strconv.Quote(req.Model)+".")
 		return
 	}
-
-	target := model.Targets[0]
-	prov := s.providers[target.Provider]
-	rec.Target, rec.Attempts = target.Key(), 1
-	w.Header().Set(HeaderTarget, rec.Target)
-	w.Header().Set(HeaderAttempts, "1")
 	w.Header().Set(HeaderCache, rec.Cache)
 
 	if req.Stream {
-		s.serveStream(w, r, rec, &req, prov, target)
+		s.serveStream(w, r, rec, &req, model)
 	} else {
-		s.serveJSON(w, r, rec, &req, prov, target)
+		s.serveJSON(w, r, rec, &req, model)
 	}
 }
 
-func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, prov provider.Provider, target config.Target) {
-	upStart := s.now()
-	resp, err := prov.Chat(r.Context(), req, target.Model)
-	rec.Upstream = s.now().Sub(upStart)
+// attempt runs fn against targets in router order until one succeeds, the
+// error is not retryable, or the attempt budget is spent. fn returns the
+// upstream error (nil on success).
+func (s *Server) attempt(ctx context.Context, rec *record, model config.Model, fn func(context.Context, config.Target, provider.Provider) error) error {
+	plan := s.router.Plan(model)
+	var lastErr error = errNoHealthyTarget
+	attempts, skipped := 0, 0
+	for i := 0; attempts < s.router.MaxAttempts() && skipped < len(plan); i++ {
+		t := plan[i%len(plan)]
+		b := s.router.Breaker(t)
+		if !b.Allow() {
+			skipped++
+			continue
+		}
+		skipped = 0
+		attempts++
+		if attempts > 1 {
+			d := s.router.Backoff(attempts)
+			if !router.Sleep(ctx, d) {
+				b.Cancel()
+				return &provider.Error{Code: provider.CodeCanceled, Message: "client canceled"}
+			}
+			rec.Backoff += d
+		}
+		rec.Target, rec.Attempts = t.Key(), attempts
+
+		up := s.now()
+		err := fn(ctx, t, s.providers[t.Provider])
+		rec.Upstream += s.now().Sub(up)
+		if err == nil {
+			b.Success()
+			return nil
+		}
+		switch {
+		case router.CountsAsFailure(err):
+			b.Failure()
+		case ctx.Err() != nil:
+			b.Cancel()
+		default:
+			b.Success() // the target answered; the request itself was bad
+		}
+		s.metrics.UpstreamErrors.WithLabelValues(t.Key(), errorCode(err)).Inc()
+		lastErr = err
+		if ctx.Err() != nil || !s.router.Retryable(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model) {
+	var resp *api.ChatResponse
+	err := s.attempt(r.Context(), rec, model, func(ctx context.Context, t config.Target, p provider.Provider) error {
+		var err error
+		resp, err = p.Chat(ctx, req, t.Model)
+		return err
+	})
+	s.setRoutingHeaders(w, rec)
 	if err != nil {
 		s.upstreamError(w, rec, err)
 		return
@@ -118,86 +175,135 @@ func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, 
 	rec.TTFT = s.now().Sub(rec.Start)
 }
 
-func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, prov provider.Provider, target config.Target) {
+// openStream starts a stream and waits for its first chunk, falling back to
+// other targets on failure. Nothing has been written to the client yet, so
+// fallback is still safe. The returned release func must be called when the
+// stream is done.
+func (s *Server) openStream(ctx context.Context, rec *record, req *api.ChatRequest, model config.Model) (provider.Stream, *api.ChatChunk, func(), error) {
+	var (
+		st      provider.Stream
+		first   *api.ChatChunk
+		release func()
+	)
+	err := s.attempt(ctx, rec, model, func(ctx context.Context, t config.Target, p provider.Provider) error {
+		actx, cancel := context.WithCancelCause(ctx)
+		timer := time.AfterFunc(s.router.FirstByteTimeout(), func() { cancel(errFirstByteTimeout) })
+		stream, err := p.ChatStream(actx, req, t.Model)
+		var chunk *api.ChatChunk
+		if err == nil {
+			chunk, err = stream.Next()
+			if errors.Is(err, io.EOF) {
+				err = &provider.Error{Provider: t.Provider, Code: provider.CodeBadResponse, Message: "empty stream", Retryable: true}
+			}
+		}
+		if !timer.Stop() && err == nil {
+			err = errFirstByteTimeout // the timer fired just as the first chunk arrived
+		}
+		if err != nil {
+			if stream != nil {
+				_ = stream.Close()
+			}
+			if context.Cause(actx) == errFirstByteTimeout && ctx.Err() == nil {
+				err = &provider.Error{Provider: t.Provider, Code: provider.CodeTimeout, Retryable: true,
+					Message: fmt.Sprintf("no first chunk within %s", s.router.FirstByteTimeout())}
+			}
+			cancel(nil)
+			return err
+		}
+		st, first, release = stream, chunk, func() { _ = stream.Close(); cancel(nil) }
+		return nil
+	})
+	return st, first, release, err
+}
+
+func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record, req *api.ChatRequest, model config.Model) {
 	ctx := r.Context()
 	clientWantsUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 
-	upStart := s.now()
-	st, err := prov.ChatStream(ctx, req, target.Model)
+	st, first, release, err := s.openStream(ctx, rec, req, model)
+	s.setRoutingHeaders(w, rec)
 	if err != nil {
-		rec.Upstream = s.now().Sub(upStart)
 		s.upstreamError(w, rec, err)
 		return
 	}
-	defer st.Close()
+	defer release()
+	upStart := s.now() // time before the first chunk is already in rec.Upstream
 
 	sse.SetHeaders(w.Header())
 	w.WriteHeader(http.StatusOK)
 	sw := sse.NewWriter(w)
-
 	buffered, _ := st.(provider.BufferedStream)
+
 	var usage *api.Usage
 	completionBytes := 0
 	firstContentPending := false // first content chunk written but not yet flushed
+	clientGone := func() { rec.Status, rec.ErrorCode = 499, provider.CodeCanceled }
+
+	c := first
 	for {
-		c, err := st.Next()
+		if c.Usage != nil {
+			usage = c.Usage
+		}
+		usageOnly := c.Usage != nil && len(c.Choices) == 0
+		if !usageOnly || clientWantsUsage {
+			text := c.ContentText()
+			completionBytes += len(text)
+			data := c.Raw
+			if data == nil {
+				data, _ = json.Marshal(c)
+			}
+			if err := sw.Write(data); err != nil {
+				clientGone()
+				break
+			}
+			if rec.TTFT == 0 && text != "" {
+				firstContentPending = true
+			}
+			// Flush unless the next chunk is already buffered: coalesces
+			// bursts into one write without delaying a chunk on network I/O.
+			if buffered == nil || !buffered.HasBufferedChunk() {
+				if err := sw.Flush(); err != nil {
+					clientGone()
+					break
+				}
+				if firstContentPending {
+					rec.TTFT = s.now().Sub(rec.Start)
+					firstContentPending = false
+				}
+			}
+		}
+
+		c, err = st.Next()
 		if errors.Is(err, io.EOF) {
+			_ = sw.WriteDone()
 			break
 		}
 		if err != nil {
-			rec.Upstream = s.now().Sub(upStart)
 			if ctx.Err() != nil {
-				rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
-				return
+				clientGone()
+				break
 			}
-			// Headers are already sent: report the failure in-band.
+			// Headers are already sent, so no fallback: report in-band.
 			rec.Status, rec.ErrorCode = http.StatusBadGateway, errorCode(err)
 			s.metrics.UpstreamErrors.WithLabelValues(rec.Target, rec.ErrorCode).Inc()
+			if router.CountsAsFailure(err) {
+				s.router.BreakerByKey(rec.Target).Failure()
+			}
 			b, _ := json.Marshal(api.ErrorBody{Error: api.ErrorDetail{Message: "Upstream stream failed.", Type: "api_error", Code: rec.ErrorCode}})
 			_ = sw.WriteData(b)
 			_ = sw.WriteDone()
-			s.applyUsage(rec, req, usage, func() int { return completionBytes })
-			return
-		}
-		if c.Usage != nil {
-			usage = c.Usage
-			if !clientWantsUsage && len(c.Choices) == 0 {
-				continue // usage-only chunk the client didn't ask for
-			}
-		}
-		text := c.ContentText()
-		completionBytes += len(text)
-		data := c.Raw
-		if data == nil {
-			if data, err = json.Marshal(c); err != nil {
-				continue
-			}
-		}
-		if err := sw.Write(data); err != nil {
-			rec.Upstream = s.now().Sub(upStart)
-			rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
-			return
-		}
-		if rec.TTFT == 0 && text != "" {
-			firstContentPending = true
-		}
-		// Flush unless the next chunk is already buffered: coalesces bursts
-		// into one write without ever delaying a chunk on network I/O.
-		if buffered == nil || !buffered.HasBufferedChunk() {
-			if err := sw.Flush(); err != nil {
-				rec.Upstream = s.now().Sub(upStart)
-				rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
-				return
-			}
-			if firstContentPending {
-				rec.TTFT = s.now().Sub(rec.Start)
-				firstContentPending = false
-			}
+			break
 		}
 	}
-	rec.Upstream = s.now().Sub(upStart)
-	_ = sw.WriteDone()
+	rec.Upstream += s.now().Sub(upStart)
 	s.applyUsage(rec, req, usage, func() int { return completionBytes })
+}
+
+func (s *Server) setRoutingHeaders(w http.ResponseWriter, rec *record) {
+	if rec.Target != "" {
+		w.Header().Set(HeaderTarget, rec.Target)
+	}
+	w.Header().Set(HeaderAttempts, strconv.Itoa(rec.Attempts))
 }
 
 // applyUsage fills token counts from upstream usage, or estimates them.
@@ -213,12 +319,15 @@ func (s *Server) applyUsage(rec *record, req *api.ChatRequest, u *api.Usage, com
 
 // upstreamError maps a provider error to an OpenAI-style client error.
 func (s *Server) upstreamError(w http.ResponseWriter, rec *record, err error) {
+	if errors.Is(err, errNoHealthyTarget) {
+		s.reject(w, rec, http.StatusServiceUnavailable, "api_error", "no_healthy_target", "All upstream targets for this model are temporarily unavailable.")
+		return
+	}
 	pe, ok := provider.AsError(err)
 	if !ok {
 		s.reject(w, rec, http.StatusBadGateway, "api_error", provider.CodeUpstream, "Upstream request failed.")
 		return
 	}
-	s.metrics.UpstreamErrors.WithLabelValues(rec.Target, pe.Code).Inc()
 	switch {
 	case pe.Code == provider.CodeCanceled:
 		rec.Status, rec.ErrorCode = 499, pe.Code
@@ -264,7 +373,7 @@ func (s *Server) finish(rec *record) {
 		m.TTFT.WithLabelValues(alias).Observe(rec.TTFT.Seconds())
 	}
 	if rec.Upstream > 0 {
-		m.Overhead.Observe((rec.Latency - rec.Upstream).Seconds())
+		m.Overhead.Observe((rec.Latency - rec.Upstream - rec.Backoff).Seconds())
 		m.Attempts.Observe(float64(rec.Attempts))
 	}
 }

@@ -54,7 +54,9 @@ routing:
   first_byte_timeout: 20s
 
 breaker:
-  failure_threshold: 5
+  failure_rate: 0.5      # trip when ≥50% of requests fail…
+  min_requests: 20       # …over at least 20 requests…
+  window: 10s            # …in a sliding 10s window
   open_duration: 30s
   half_open_max_requests: 1
 

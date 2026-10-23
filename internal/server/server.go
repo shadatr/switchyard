@@ -15,6 +15,7 @@ import (
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/store"
 )
 
@@ -77,7 +78,7 @@ func KeyFrom(ctx context.Context) *store.Key {
 type Server struct {
 	cfg       *config.Config
 	providers map[string]provider.Provider
-	models    map[string]config.Model
+	router    *router.Router
 	metrics   *metrics.Metrics
 	log       *slog.Logger
 	auth      Authenticator
@@ -89,7 +90,6 @@ func New(d Deps) *Server {
 	s := &Server{
 		cfg:       d.Config,
 		providers: d.Providers,
-		models:    make(map[string]config.Model, len(d.Config.Models)),
 		metrics:   d.Metrics,
 		log:       d.Logger,
 		auth:      d.Auth,
@@ -101,9 +101,7 @@ func New(d Deps) *Server {
 	if s.metrics == nil {
 		s.metrics = metrics.New()
 	}
-	for _, m := range d.Config.Models {
-		s.models[m.Alias] = m
-	}
+	s.router = router.New(d.Config, s.metrics)
 	return s
 }
 

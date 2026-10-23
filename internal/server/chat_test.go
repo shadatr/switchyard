@@ -63,7 +63,9 @@ func newHarness(t *testing.T, opts mockllm.Options, withAuth bool) *harness {
 		Server:    config.Server{MaxBodyBytes: 1 << 20},
 		Providers: []config.Provider{pcfg},
 		Models:    []config.Model{{Alias: "fast", Strategy: config.StrategyPriority, Targets: []config.Target{{Provider: "mock", Model: "mock-a"}}}},
+		Routing:   config.Routing{MaxAttempts: 1},
 	}
+	cfg.ApplyDefaults()
 	d := Deps{Config: cfg, Providers: map[string]provider.Provider{"mock": openai.New(pcfg, "")}}
 	if withAuth {
 		d.Auth = testKeys
@@ -235,6 +237,7 @@ func TestMidStreamFailureReportedInBand(t *testing.T) {
 		Server: config.Server{MaxBodyBytes: 1 << 20},
 		Models: []config.Model{{Alias: "fast", Targets: []config.Target{{Provider: "mock", Model: "mock-a"}}}},
 	}
+	cfg.ApplyDefaults()
 	gw := httptest.NewServer(New(Deps{Config: cfg, Providers: map[string]provider.Provider{"mock": openai.New(pcfg, "")}}).Handler())
 	defer gw.Close()
 
