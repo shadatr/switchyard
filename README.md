@@ -76,6 +76,8 @@ curl localhost:8787/v1/chat/completions -H "Authorization: Bearer sy-…" \
 cd web && npm install && npm run dev   # dashboard on http://localhost:3100
 ```
 
+**Demo mode (no backend).** `NEXT_PUBLIC_DEMO=1 npm run build` produces a dashboard that serves admin-API responses recorded from a real gateway (`web/public/demo`, captured with `web/scripts/capture-demo.mjs` against `deploy/switchyard.demo.yaml`, which routes to simulated upstreams) and replays the live tail — suitable for free static hosting.
+
 Everything in containers instead: `docker compose -f deploy/docker-compose.yml --profile full up -d --build`.
 Tracing UI: `docker compose -f deploy/docker-compose.yml --profile tracing up -d jaeger`, set `tracing.enabled: true`, open http://localhost:16686.
 

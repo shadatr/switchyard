@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { type LiveEvent, backoffMs, liveUrl, parseLiveMessage } from "./api";
+import { IS_DEMO, demoLive } from "./demo";
 import { useSession } from "./session";
 
 export const LIVE_CAP = 500;
@@ -60,6 +61,21 @@ export function useLiveTail(paused: boolean): LiveState {
 
   useEffect(() => {
     if (!token) return;
+    if (IS_DEMO) {
+      setState((s) => ({ ...s, status: "open", retryInMs: null }));
+      return demoLive((msg) => {
+        arrivals.current.push({ at: Date.now(), n: msg.events.length });
+        const rows = msg.events.map((e) => ({ ...e, seq: ++seq.current }));
+        if (pausedRef.current) pending.current = pending.current.concat(rows).slice(-LIVE_CAP);
+        setState((s) => ({
+          ...s,
+          rows: pausedRef.current ? s.rows : mergeNewest(s.rows, rows),
+          buffered: pausedRef.current ? pending.current.length : 0,
+          received: s.received + rows.length,
+          lastSkipped: 0,
+        }));
+      });
+    }
     let ws: WebSocket | null = null;
     let attempt = 0;
     let retryTimer: number | undefined;

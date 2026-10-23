@@ -7,6 +7,7 @@ import { SWRConfig } from "swr";
 import { ApiError } from "@/lib/api";
 import { useTargets } from "@/lib/hooks";
 import { PrefsProvider } from "@/lib/prefs";
+import { IS_DEMO, REPO_URL } from "@/lib/demo";
 import { useSession } from "@/lib/session";
 import { IconKey, IconLive, IconLogout, IconMoon, IconOverview, IconRequests, IconSun, IconTargets, Mark } from "./icons";
 import { SignIn } from "./sign-in";
@@ -120,23 +121,25 @@ function Frame({ children }: { children: ReactNode }) {
         <div className="mt-auto flex flex-col gap-2 p-3">
           <div className="rounded-xl border border-line bg-panel p-3">
             <div className="flex items-center gap-2 text-[12px]">
-              <Lamp tone={connected ? "ok" : targets.error ? "err" : "neutral"} />
-              <span className="text-fg-2">{connected ? "Connected" : targets.error ? "Unreachable" : "Connecting…"}</span>
+              <Lamp tone={IS_DEMO ? "signal" : connected ? "ok" : targets.error ? "err" : "neutral"} />
+              <span className="text-fg-2">{IS_DEMO ? "Demo data" : connected ? "Connected" : targets.error ? "Unreachable" : "Connecting…"}</span>
             </div>
             <p className="mt-1 truncate font-mono text-[11px] text-muted" title={baseUrl}>
-              {baseUrl.replace(/^https?:\/\//, "")}
+              {IS_DEMO ? "recorded from a live gateway" : baseUrl.replace(/^https?:\/\//, "")}
             </p>
           </div>
           <div className="flex items-center gap-1">
             <ThemeToggle />
-            <button
-              type="button"
-              onClick={() => signOut()}
-              className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] text-muted transition-colors hover:bg-hover hover:text-fg"
-            >
-              <IconLogout size={14} />
-              Sign out
-            </button>
+            {IS_DEMO ? null : (
+              <button
+                type="button"
+                onClick={() => signOut()}
+                className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] text-muted transition-colors hover:bg-hover hover:text-fg"
+              >
+                <IconLogout size={14} />
+                Sign out
+              </button>
+            )}
           </div>
         </div>
       </aside>
@@ -149,14 +152,16 @@ function Frame({ children }: { children: ReactNode }) {
           <Lamp tone={connected ? "ok" : targets.error ? "err" : "neutral"} className="ml-1" />
           <div className="ml-auto flex items-center">
             <ThemeToggle />
-            <button
-              type="button"
-              aria-label="Sign out"
-              onClick={() => signOut()}
-              className="grid size-8 place-items-center rounded-lg text-muted hover:bg-hover hover:text-fg"
-            >
-              <IconLogout size={15} />
-            </button>
+            {IS_DEMO ? null : (
+              <button
+                type="button"
+                aria-label="Sign out"
+                onClick={() => signOut()}
+                className="grid size-8 place-items-center rounded-lg text-muted hover:bg-hover hover:text-fg"
+              >
+                <IconLogout size={15} />
+              </button>
+            )}
           </div>
         </div>
         <nav aria-label="Primary" className="-mb-px flex gap-1 overflow-x-auto px-3">
@@ -180,10 +185,30 @@ function Frame({ children }: { children: ReactNode }) {
       </header>
 
       <main id="main" className="relative min-w-0">
+        {IS_DEMO ? <DemoBanner /> : null}
         <div className="yard-grid pointer-events-none absolute inset-x-0 top-0 h-[280px] opacity-60" />
         <div className="relative mx-auto w-full max-w-[1400px] px-4 py-5 md:px-8 md:py-7">{children}</div>
       </main>
       <GoShortcuts />
+    </div>
+  );
+}
+
+function DemoBanner() {
+  return (
+    <div className="relative z-10 border-b border-line bg-raised/80 px-4 py-2 text-[12.5px] text-fg-2 md:px-8">
+      <span className="mr-2 rounded border border-[color:var(--signal)] px-1.5 py-px font-mono text-[10px] uppercase tracking-[0.12em] text-signal">
+        Demo
+      </span>
+      Recorded from a real Switchyard gateway routing to simulated LLM upstreams. The live tail replays that traffic; key changes stay in your browser.
+      {REPO_URL ? (
+        <>
+          {" "}
+          <a href={REPO_URL} className="text-fg underline decoration-line-strong underline-offset-2 hover:decoration-[color:var(--signal)]">
+            Run the full stack with Docker →
+          </a>
+        </>
+      ) : null}
     </div>
   );
 }

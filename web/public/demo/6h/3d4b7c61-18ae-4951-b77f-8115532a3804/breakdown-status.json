@@ -1,0 +1,1 @@
+{"by":"status","groups":[{"key":"200","requests":27467,"errors":0,"tokens":18927783,"cost_usd":41.3154735199997,"latency_p95_ms":3567.9343261718745},{"key":"502","requests":314,"errors":314,"tokens":147084,"cost_usd":0,"latency_p95_ms":3522.134545898436},{"key":"429","requests":240,"errors":240,"tokens":110140,"cost_usd":0,"latency_p95_ms":3810.972229003905}]}

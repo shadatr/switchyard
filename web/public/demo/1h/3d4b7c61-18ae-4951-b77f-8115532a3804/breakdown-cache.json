@@ -1,0 +1,1 @@
+{"by":"cache","groups":[{"key":"miss","requests":4040,"errors":95,"tokens":2863339,"cost_usd":7.381334819999993,"latency_p95_ms":3752.839172363278},{"key":"bypass","requests":1166,"errors":0,"tokens":82786,"cost_usd":0.0438999000000002,"latency_p95_ms":1410.2640075683594},{"key":"hit","requests":741,"errors":0,"tokens":525864,"cost_usd":0,"latency_p95_ms":1.3481006622314453}]}

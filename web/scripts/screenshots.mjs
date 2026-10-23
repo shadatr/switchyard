@@ -13,7 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const BASE = process.env.DASHBOARD_URL ?? "http://localhost:3100";
 const TOKEN = process.env.SWITCHYARD_ADMIN_TOKEN;
-const OUT = new URL("../../docs/screenshots/", import.meta.url).pathname;
+const OUT = process.env.SCREENSHOT_DIR ? process.env.SCREENSHOT_DIR.replace(/\/?$/, "/") : new URL("../../docs/screenshots/", import.meta.url).pathname;
 const PORT = 9333;
 const PROFILE = "/tmp/switchyard-screenshots";
 

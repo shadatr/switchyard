@@ -1,0 +1,47 @@
+# Demo config: realistic provider/model names backed by simulated upstreams
+# (cmd/mockllm), so the dashboard shows routing, fallback and breakers without
+# calling paid APIs. Upstream "openrouter" is deliberately flaky.
+server: { addr: ":8787" }
+admin:
+  token_env: SWITCHYARD_ADMIN_TOKEN
+  cors_origins: ["http://localhost:3100", "http://127.0.0.1:3100"]
+redis: { addr: "localhost:16379", timeout: 50ms, fail_open: true }
+postgres: { dsn_env: SWITCHYARD_PG_DSN }
+clickhouse: { addr: "localhost:19000", database: switchyard, username: default, password_env: SWITCHYARD_CH_PASSWORD }
+
+providers:
+  - { name: openai,     type: openai, base_url: "http://127.0.0.1:9797/v1" }   # fast, healthy
+  - { name: anthropic,  type: openai, base_url: "http://127.0.0.1:9798/v1" }   # slower, healthy
+  - { name: openrouter, type: openai, base_url: "http://127.0.0.1:9799/v1" }   # flaky (~60% 503)
+
+models:
+  - alias: fast
+    strategy: priority
+    targets:
+      - { provider: openai,    model: gpt-4o-mini }
+      - { provider: anthropic, model: claude-haiku-4-5 }
+  - alias: smart
+    strategy: weighted
+    targets:
+      - { provider: anthropic, model: claude-sonnet-4-5, weight: 70 }
+      - { provider: openai,    model: gpt-4o, weight: 30 }
+  - alias: cheap
+    strategy: priority
+    targets:
+      - { provider: openrouter, model: llama-3.1-8b }
+      - { provider: openai,     model: gpt-4o-mini }
+
+routing:
+  max_attempts: 3
+  retry_backoff: { base: 20ms, max: 200ms, jitter: true }
+  retry_on: [429, 500, 502, 503, 504, 529, timeout, connect_error]
+  first_byte_timeout: 10s
+breaker: { failure_rate: 0.5, min_requests: 8, window: 30s, open_duration: 20s }   # tuned for ~1 rps demo traffic
+cache: { enabled: true, ttl: 10m, only_when_temperature_zero: true }
+
+pricing:   # USD per 1M tokens (illustrative)
+  "openai/gpt-4o-mini":          { input: 0.15, output: 0.60 }
+  "openai/gpt-4o":               { input: 2.50, output: 10.00 }
+  "anthropic/claude-haiku-4-5":  { input: 1.00, output: 5.00 }
+  "anthropic/claude-sonnet-4-5": { input: 3.00, output: 15.00 }
+  "openrouter/llama-3.1-8b":     { input: 0.05, output: 0.08 }

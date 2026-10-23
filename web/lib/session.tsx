@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ApiError, SwitchyardClient, baseUrl } from "./api";
+import { DEMO_TOKEN, IS_DEMO, demoFetch } from "./demo";
 
 const STORAGE_KEY = "switchyard.admin_token";
 
@@ -37,14 +38,18 @@ function writeToken(token: string | null) {
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null | undefined>(undefined);
   const [notice, setNotice] = useState<string | null>(null);
-  const url = baseUrl();
+  const url = IS_DEMO ? "demo" : baseUrl();
 
   // sessionStorage only exists in the browser: read it after hydration.
+  // Demo mode needs no sign-in.
   useEffect(() => {
-    setToken(readToken());
+    setToken(IS_DEMO ? DEMO_TOKEN : readToken());
   }, []);
 
-  const client = useMemo(() => (token ? new SwitchyardClient({ baseUrl: url, token }) : null), [token, url]);
+  const client = useMemo(
+    () => (token ? new SwitchyardClient({ baseUrl: url, token, fetch: IS_DEMO ? demoFetch : undefined }) : null),
+    [token, url],
+  );
 
   const signIn = useCallback(
     async (candidate: string) => {
@@ -60,6 +65,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = useCallback((msg?: string) => {
+    if (IS_DEMO) return; // nothing to sign out of
     writeToken(null);
     setNotice(msg ?? null);
     setToken(null);
