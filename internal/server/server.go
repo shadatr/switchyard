@@ -14,7 +14,9 @@ import (
 	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
+	"github.com/shadatr/switchyard/internal/pricing"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/store"
 )
@@ -32,6 +34,12 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, plaintext string) (*store.Key, error)
 }
 
+// Limiter enforces per-key rate limits and budgets.
+type Limiter interface {
+	Admit(ctx context.Context, k *store.Key, estimatedTokens int) ratelimit.Decision
+	Settle(k *store.Key, reserved, actualTokens int, costUSD float64)
+}
+
 // Deps are the collaborators the server needs.
 type Deps struct {
 	Config    *config.Config
@@ -39,6 +47,7 @@ type Deps struct {
 	Metrics   *metrics.Metrics
 	Logger    *slog.Logger
 	Auth      Authenticator // nil disables authentication (benchmarks only)
+	Limiter   Limiter       // nil disables rate limits and budgets
 }
 
 // anonymousKey is used when authentication is disabled.
@@ -82,6 +91,8 @@ type Server struct {
 	metrics   *metrics.Metrics
 	log       *slog.Logger
 	auth      Authenticator
+	limiter   Limiter
+	pricing   pricing.Table
 	now       func() time.Time
 }
 
@@ -93,6 +104,8 @@ func New(d Deps) *Server {
 		metrics:   d.Metrics,
 		log:       d.Logger,
 		auth:      d.Auth,
+		limiter:   d.Limiter,
+		pricing:   pricing.Table(d.Config.Pricing),
 		now:       time.Now,
 	}
 	if s.log == nil {

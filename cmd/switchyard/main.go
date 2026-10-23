@@ -12,12 +12,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/provider/openai"
+	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/server"
 	"github.com/shadatr/switchyard/internal/store"
 )
@@ -60,11 +64,24 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	m := metrics.New()
 	deps := server.Deps{
 		Config:    cfg,
 		Providers: providers,
-		Metrics:   metrics.New(),
+		Metrics:   m,
 		Logger:    slog.Default(),
+	}
+	if cfg.Redis.Addr != "" {
+		rdb := redis.NewClient(&redis.Options{
+			Addr: cfg.Redis.Addr, DialTimeout: time.Second,
+			ReadTimeout: cfg.Redis.Timeout, WriteTimeout: cfg.Redis.Timeout,
+			PoolSize: 256, MaxRetries: -1,
+		})
+		defer rdb.Close()
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Warn("redis not reachable at startup; limits will fail open until it is", "addr", cfg.Redis.Addr, "err", err)
+		}
+		deps.Limiter = ratelimit.New(rdb, cfg.Redis.Timeout, m, slog.Default())
 	}
 	if cfg.Auth.IsEnabled() {
 		st, err := openStore(ctx, cfg)

@@ -15,6 +15,7 @@ import (
 	"github.com/shadatr/switchyard/internal/api"
 	"github.com/shadatr/switchyard/internal/config"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/router"
 	"github.com/shadatr/switchyard/internal/sse"
 	"github.com/shadatr/switchyard/internal/tokens"
@@ -39,6 +40,7 @@ type record struct {
 	TokensEstimated  bool
 	Latency          time.Duration
 	TTFT             time.Duration
+	CostUSD          float64
 	Upstream         time.Duration // time spent waiting on upstreams (all attempts)
 	Backoff          time.Duration // time spent sleeping between attempts
 }
@@ -86,11 +88,52 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(HeaderCache, rec.Cache)
 
+	reserved := 0
+	if s.limiter != nil {
+		d := s.limiter.Admit(r.Context(), key, tokens.Estimate(req.PromptText()))
+		setRateLimitHeaders(w.Header(), d)
+		if !d.Allowed {
+			s.rejectLimited(w, rec, d)
+			return
+		}
+		reserved = d.TokensReserved
+		defer func() {
+			if rec.Upstream > 0 || reserved > 0 {
+				s.limiter.Settle(key, reserved, rec.PromptTokens+rec.CompletionTokens, rec.CostUSD)
+			}
+		}()
+	}
+
 	if req.Stream {
 		s.serveStream(w, r, rec, &req, model)
 	} else {
 		s.serveJSON(w, r, rec, &req, model)
 	}
+}
+
+func setRateLimitHeaders(h http.Header, d ratelimit.Decision) {
+	if d.LimitRequests >= 0 {
+		h.Set("x-ratelimit-limit-requests", strconv.Itoa(d.LimitRequests))
+		h.Set("x-ratelimit-remaining-requests", strconv.Itoa(max(d.RemainingRequests, 0)))
+	}
+	if d.LimitTokens >= 0 {
+		h.Set("x-ratelimit-limit-tokens", strconv.Itoa(d.LimitTokens))
+		h.Set("x-ratelimit-remaining-tokens", strconv.Itoa(max(d.RemainingTokens, 0)))
+	}
+}
+
+func (s *Server) rejectLimited(w http.ResponseWriter, rec *record, d ratelimit.Decision) {
+	if d.Kind == ratelimit.KindBudget {
+		s.reject(w, rec, http.StatusPaymentRequired, "insufficient_quota", "budget_exceeded", "This API key has used its monthly budget.")
+		return
+	}
+	secs := int((d.RetryAfter + time.Second - 1) / time.Second)
+	w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
+	msg := "Rate limit reached for requests per minute."
+	if d.Kind == ratelimit.KindTPM {
+		msg = "Rate limit reached for tokens per minute."
+	}
+	s.reject(w, rec, http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded", msg)
 }
 
 // attempt runs fn against targets in router order until one succeeds, the
@@ -169,6 +212,7 @@ func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, rec *record, 
 			return
 		}
 	}
+	rec.CostUSD = s.pricing.Cost(rec.Target, rec.PromptTokens, rec.CompletionTokens)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
@@ -297,6 +341,7 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 	}
 	rec.Upstream += s.now().Sub(upStart)
 	s.applyUsage(rec, req, usage, func() int { return completionBytes })
+	rec.CostUSD = s.pricing.Cost(rec.Target, rec.PromptTokens, rec.CompletionTokens)
 }
 
 func (s *Server) setRoutingHeaders(w http.ResponseWriter, rec *record) {

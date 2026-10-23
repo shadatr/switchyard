@@ -59,8 +59,7 @@ switchyard/
 │   ├── router/            # model aliases, weighted targets, fallback, retries
 │   ├── breaker/           # per-target circuit breaker
 │   ├── auth/              # API key auth (hashed keys), key cache
-│   ├── ratelimit/         # Redis token buckets (RPM, TPM) via Lua
-│   ├── budget/            # monthly USD budgets per key/project
+│   ├── ratelimit/         # Redis token buckets (RPM, TPM) via Lua + monthly USD budgets
 │   ├── pricing/           # per-model price table, cost calculation
 │   ├── tokens/            # token estimation when upstream omits usage
 │   ├── cache/             # exact-match response cache

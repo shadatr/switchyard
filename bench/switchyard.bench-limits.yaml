@@ -1,0 +1,19 @@
+redis:
+  addr: "127.0.0.1:16379"
+  timeout: 50ms
+postgres:
+  dsn_env: SWITCHYARD_PG_DSN
+# Benchmark config: one zero-latency mock target, no external dependencies.
+server:
+  addr: ":8787"
+providers:
+  - name: mock
+    type: openai
+    base_url: http://127.0.0.1:9797/v1
+    max_idle_conns_per_host: 4096
+models:
+  - alias: mock-fast
+    targets:
+      - { provider: mock, model: mock-a }
+pricing:
+  "mock/mock-a": { input: 0.10, output: 0.40 }

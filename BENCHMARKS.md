@@ -92,6 +92,19 @@ The first breaker design tripped after N consecutive failures. In the 30% chaos 
 
 Cause: failures come back in ~1 ms while successes take ~40 ms, so with ~20 requests in flight the failures *complete* first and look consecutive. Switching to a failure rate over completed requests still tripped once at startup for the same reason (the first completions are all failures). The final design counts failures against requests **started** in a sliding 10 s window (10 buckets) — independent of completion order. Regression test: `TestFastFailuresDoNotTripMostlyHealthyTarget`.
 
+## Phase 6 — rate limits and budgets (Redis)
+
+Run `20261023-125433`, 5,000 rps, key with RPM + TPM + monthly budget (limits set high so nothing is rejected — this measures enforcement cost). Redis 7 runs in Docker Desktop (`bench/switchyard.bench-limits.yaml`).
+
+| Mode | Target rps | Achieved rps | Errors | Baseline p50 / p99 (ms) | Gateway p50 / p99 (ms) | Added p50 / p99 (ms) | Self-measured overhead p50 / p95 / p99 (ms) |
+|---|---:|---:|---:|---|---|---|---|
+| nonstream | 5000 | 5000 | 0 | 0.08 / 0.12 | 0.31 / 0.98 | +0.23 / +0.86 | 0.151 / 0.318 / 1.107 |
+| stream | 5000 | 5000 | 0 | 0.12 / 0.31 | 0.52 / 1.69 | +0.39 / +1.38 | 0.249 / 0.564 / 0.988 |
+
+Enforcing limits costs one pipelined Redis round trip per request (RPM bucket + TPM bucket + budget read in a single `EVALSHA`/`GET` pipeline); settlement after the response is asynchronous. Self-measured p99 overhead rises from ~0.02 ms to ~1.1 ms — almost entirely the round trip through Docker Desktop's VM network on macOS, so expect lower on Linux with Redis on the same host or a nearby instance. Keys without limits skip Redis entirely.
+
+Correctness (see `internal/ratelimit` tests, run against both miniredis and the real Redis): 100 goroutines × 100 requests against a 600 rpm key never exceed 600 + refill; a 30-rpm key over HTTP allowed exactly 30 of 35 requests and returned `Retry-After: 2`; with Redis stopped, requests kept succeeding (fail open) and `switchyard_dependency_errors_total{dep="redis"}` counted every degraded request while the warning was logged once.
+
 ## Optimization log
 
 ### 1. Flush coalescing for SSE (phase 3)

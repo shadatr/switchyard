@@ -31,8 +31,18 @@ type Provider struct {
 	client  *http.Client
 }
 
-// New builds a provider with its own tuned HTTP transport.
+// New builds a provider with its own tuned HTTP transport. Zero values in cfg
+// fall back to safe defaults (a zero timeout would fail every request).
 func New(cfg config.Provider, apiKey string) *Provider {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 60 * time.Second
+	}
+	if cfg.ConnectTimeout <= 0 {
+		cfg.ConnectTimeout = 3 * time.Second
+	}
+	if cfg.MaxIdleConnsPerHost <= 0 {
+		cfg.MaxIdleConnsPerHost = 64
+	}
 	dialer := &net.Dialer{Timeout: cfg.ConnectTimeout, KeepAlive: 30 * time.Second}
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
