@@ -48,13 +48,14 @@ switchyard/
 │   └── mockllm/           # fake OpenAI-compatible upstream for tests & benchmarks
 ├── internal/
 │   ├── config/            # YAML + env loading, validation
+│   ├── mockllm/           # fake OpenAI-compatible upstream (used by cmd/mockllm and tests)
 │   ├── api/               # OpenAI-compatible request/response types
 │   ├── sse/               # SSE reader/writer (fuzz-tested)
 │   ├── provider/          # Provider interface + adapters
 │   │   ├── openai/        # OpenAI & any OpenAI-compatible (OpenRouter, Groq, Together…)
 │   │   ├── anthropic/     # Messages API ⇄ OpenAI translation
 │   │   ├── gemini/        # Gemini ⇄ OpenAI translation
-│   │   └── mock/          # in-process mock for unit tests
+│   │   └── (mock upstream lives in internal/mockllm)
 │   ├── router/            # model aliases, weighted targets, fallback, retries
 │   ├── breaker/           # per-target circuit breaker
 │   ├── auth/              # API key auth (hashed keys), key cache
