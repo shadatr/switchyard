@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,6 +29,7 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "deploy/switchyard.example.yaml", "path to YAML config")
+	debugAddr := flag.String("debug-addr", "", "if set, serve pprof on this address (e.g. localhost:6060)")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -57,6 +59,10 @@ func run() error {
 		Addr:              cfg.Server.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+	}
+
+	if *debugAddr != "" {
+		go serveDebug(*debugAddr)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,4 +104,18 @@ func buildProviders(cfg *config.Config) (map[string]provider.Provider, error) {
 		}
 	}
 	return out, nil
+}
+
+// serveDebug exposes pprof on a separate, opt-in listener so profiling
+// endpoints never share the public port.
+func serveDebug(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	slog.Info("debug server listening", "addr", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		slog.Error("debug server", "err", err)
+	}
 }

@@ -4,6 +4,6 @@ bin/
 deploy/switchyard.yaml
 web/node_modules/
 web/.next/
-bench/results/*.json
+bench/results/
 *.pprof
 .DS_Store

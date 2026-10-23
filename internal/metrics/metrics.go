@@ -48,7 +48,7 @@ func New() *Metrics {
 	}, []string{"alias"})
 	m.Overhead = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "switchyard_gateway_overhead_seconds", Help: "Request latency minus time spent waiting on the upstream.",
-		Buckets: prometheus.ExponentialBuckets(0.00005, 2, 14),
+		Buckets: prometheus.ExponentialBuckets(0.00001, 2, 16), // 10µs … ~330ms
 	})
 	m.UpstreamErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "switchyard_upstream_errors_total", Help: "Failed upstream attempts.",

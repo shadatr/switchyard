@@ -136,3 +136,58 @@ func FuzzWriterRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+func TestHasBufferedEvent(t *testing.T) {
+	pr, pw := io.Pipe()
+	r := NewReader(pr)
+	go func() {
+		_, _ = pw.Write([]byte("data: 1\n\ndata: 2\n\ndata: 3")) // third event incomplete
+	}()
+	if ev, err := r.Next(); err != nil || string(ev.Data) != "1" {
+		t.Fatalf("first: %q %v", ev.Data, err)
+	}
+	if !r.HasBufferedEvent() {
+		t.Fatal("event 2 is fully buffered")
+	}
+	if ev, _ := r.Next(); string(ev.Data) != "2" {
+		t.Fatalf("second: %q", ev.Data)
+	}
+	if r.HasBufferedEvent() {
+		t.Fatal("event 3 is incomplete; must report false so the caller flushes")
+	}
+	go func() { _, _ = pw.Write([]byte("\n\n")); pw.Close() }()
+	if ev, _ := r.Next(); string(ev.Data) != "3" {
+		t.Fatalf("third: %q", ev.Data)
+	}
+}
+
+func TestSmallReadsAcrossBoundaries(t *testing.T) {
+	in := "event: a\r\ndata: x\r\n\r\ndata: y\rdata: z\r\r"
+	r := NewReader(&oneByteReader{s: in})
+	var got []string
+	for {
+		ev, err := r.Next()
+		if err != nil {
+			break
+		}
+		got = append(got, ev.Name+"|"+string(ev.Data))
+	}
+	want := []string{"a|x", "|y\nz"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+type oneByteReader struct {
+	s string
+	i int
+}
+
+func (o *oneByteReader) Read(p []byte) (int, error) {
+	if o.i >= len(o.s) {
+		return 0, io.EOF
+	}
+	p[0] = o.s[o.i]
+	o.i++
+	return 1, nil
+}

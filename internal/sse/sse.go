@@ -3,7 +3,6 @@
 package sse
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -12,6 +11,8 @@ import (
 
 // MaxEventBytes bounds the size of a single event to protect memory.
 const MaxEventBytes = 1 << 20
+
+const initialBufSize = 32 << 10
 
 // ErrEventTooLarge is returned when an event exceeds MaxEventBytes.
 var ErrEventTooLarge = errors.New("sse: event too large")
@@ -28,18 +29,23 @@ type Event struct {
 // IsDone reports whether the event is the OpenAI [DONE] sentinel.
 func (e Event) IsDone() bool { return bytes.Equal(e.Data, Done) }
 
-// Reader parses an SSE stream.
+// Reader parses an SSE stream. It owns its read buffer so it can tell
+// whether a complete event is already in memory (see HasBufferedEvent).
 type Reader struct {
-	r         *bufio.Reader
+	src        io.Reader
+	buf        []byte
+	start, end int   // unread bytes are buf[start:end]
+	err        error // sticky error from src
+
 	data      bytes.Buffer
-	dataLines int // data lines in the current event; lines are joined with "\n"
+	dataLines int // data lines in the current event; joined with "\n"
 	name      string
 	has       bool // an event field has been seen since the last dispatch
 }
 
 // NewReader returns a Reader over r.
 func NewReader(r io.Reader) *Reader {
-	return &Reader{r: bufio.NewReaderSize(r, 32<<10)}
+	return &Reader{src: r, buf: make([]byte, initialBufSize)}
 }
 
 // Next returns the next event. It returns io.EOF when the stream ends cleanly.
@@ -62,12 +68,9 @@ func (r *Reader) Next() (Event, error) {
 		if line[0] == ':' {
 			continue // comment
 		}
-		field, value := line, []byte(nil)
-		if i := bytes.IndexByte(line, ':'); i >= 0 {
-			field, value = line[:i], line[i+1:]
-			if len(value) > 0 && value[0] == ' ' {
-				value = value[1:]
-			}
+		field, value, found := bytes.Cut(line, []byte(":"))
+		if found && len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
 		}
 		switch string(field) {
 		case "data":
@@ -89,6 +92,14 @@ func (r *Reader) Next() (Event, error) {
 	}
 }
 
+// HasBufferedEvent reports whether a complete event (terminated by a blank
+// line) is already buffered, i.e. the next call to Next will not block on the
+// network. Callers use it to coalesce flushes without delaying any event.
+func (r *Reader) HasBufferedEvent() bool {
+	b := r.buf[r.start:r.end]
+	return bytes.Contains(b, []byte("\n\n")) || bytes.Contains(b, []byte("\r\n\r\n")) || bytes.Contains(b, []byte("\r\r"))
+}
+
 func (r *Reader) dispatch() Event {
 	ev := Event{Name: r.name, Data: bytes.Clone(r.data.Bytes())}
 	r.data.Reset()
@@ -98,42 +109,68 @@ func (r *Reader) dispatch() Event {
 	return ev
 }
 
-// readLine returns one line without its terminator. Lines may end in "\n",
-// "\r\n" or "\r".
+// readLine returns the next line without its terminator ("\n", "\r\n" or a
+// bare "\r"). The slice is only valid until the next call.
 func (r *Reader) readLine() ([]byte, error) {
-	var line []byte
 	for {
-		b, err := r.r.ReadByte()
-		if err != nil {
-			if errors.Is(err, io.EOF) && len(line) > 0 {
-				return line, nil
+		b := r.buf[r.start:r.end]
+		if i := bytes.IndexAny(b, "\r\n"); i >= 0 {
+			if b[i] == '\n' {
+				r.start += i + 1
+				return b[:i], nil
 			}
-			return nil, err
-		}
-		switch b {
-		case '\n':
-			return line, nil
-		case '\r':
-			if next, err := r.r.Peek(1); err == nil && next[0] == '\n' {
-				_, _ = r.r.ReadByte()
+			// CR: need the next byte to tell "\r\n" from a bare "\r".
+			if i+1 < len(b) {
+				if b[i+1] == '\n' {
+					r.start += i + 2
+				} else {
+					r.start += i + 1
+				}
+				return b[:i], nil
 			}
-			return line, nil
+			if r.err != nil {
+				r.start += i + 1
+				return b[:i], nil
+			}
+		} else if r.err != nil {
+			if len(b) > 0 {
+				r.start = r.end
+				return b, nil
+			}
+			return nil, r.err
 		}
-		if len(line) >= MaxEventBytes {
+		if len(b) > MaxEventBytes {
 			return nil, ErrEventTooLarge
 		}
-		line = append(line, b)
+		r.fill()
 	}
 }
 
-// Writer writes SSE events and flushes after each one.
+// fill reads more data from src, compacting or growing the buffer as needed.
+func (r *Reader) fill() {
+	if r.start > 0 {
+		n := copy(r.buf, r.buf[r.start:r.end])
+		r.start, r.end = 0, n
+	}
+	if r.end == len(r.buf) {
+		r.buf = append(r.buf, make([]byte, len(r.buf))...)
+	}
+	n, err := r.src.Read(r.buf[r.end:])
+	r.end += n
+	if err != nil {
+		r.err = err
+	}
+}
+
+// Writer writes SSE events.
 type Writer struct {
 	w     io.Writer
 	flush func() error
+	buf   []byte
 }
 
 // NewWriter wraps an http.ResponseWriter (or any writer). If w supports
-// flushing via http.ResponseController, every event is flushed immediately.
+// flushing via http.ResponseController, Flush and WriteData flush it.
 func NewWriter(w io.Writer) *Writer {
 	sw := &Writer{w: w, flush: func() error { return nil }}
 	if rw, ok := w.(http.ResponseWriter); ok {
@@ -151,10 +188,29 @@ func SetHeaders(h http.Header) {
 	h.Set("X-Accel-Buffering", "no")
 }
 
-// WriteData writes one "data:" event. Payloads containing newlines are split
-// across multiple data lines as the spec requires.
+// WriteData writes one "data:" event and flushes it.
 func (w *Writer) WriteData(data []byte) error {
-	buf := make([]byte, 0, len(data)+16)
+	if err := w.Write(data); err != nil {
+		return err
+	}
+	return w.flush()
+}
+
+// Write writes one "data:" event without flushing. Payloads containing
+// newlines are split across multiple data lines as the spec requires.
+func (w *Writer) Write(data []byte) error {
+	w.buf = appendEvent(w.buf[:0], data)
+	_, err := w.w.Write(w.buf)
+	return err
+}
+
+// Flush sends any buffered events to the client.
+func (w *Writer) Flush() error { return w.flush() }
+
+// WriteDone writes and flushes the [DONE] sentinel.
+func (w *Writer) WriteDone() error { return w.WriteData(Done) }
+
+func appendEvent(buf, data []byte) []byte {
 	for {
 		i := bytes.IndexAny(data, "\r\n")
 		buf = append(buf, "data: "...)
@@ -170,12 +226,5 @@ func (w *Writer) WriteData(data []byte) error {
 		}
 		data = data[i+1:]
 	}
-	buf = append(buf, '\n')
-	if _, err := w.w.Write(buf); err != nil {
-		return err
-	}
-	return w.flush()
+	return append(buf, '\n')
 }
-
-// WriteDone writes the [DONE] sentinel.
-func (w *Writer) WriteDone() error { return w.WriteData(Done) }

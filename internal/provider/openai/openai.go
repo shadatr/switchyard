@@ -173,6 +173,9 @@ func (s *stream) Next() (*api.ChatChunk, error) {
 	}
 }
 
+// HasBufferedChunk implements provider.BufferedStream.
+func (s *stream) HasBufferedChunk() bool { return s.r.HasBufferedEvent() }
+
 func (s *stream) Close() error {
 	s.cancel()
 	return s.body.Close()

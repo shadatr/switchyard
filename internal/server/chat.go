@@ -127,8 +127,10 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 	w.WriteHeader(http.StatusOK)
 	sw := sse.NewWriter(w)
 
+	buffered, _ := st.(provider.BufferedStream)
 	var usage *api.Usage
 	completionBytes := 0
+	firstContentPending := false // first content chunk written but not yet flushed
 	for {
 		c, err := st.Next()
 		if errors.Is(err, io.EOF) {
@@ -163,13 +165,26 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, rec *record
 				continue
 			}
 		}
-		if err := sw.WriteData(data); err != nil {
+		if err := sw.Write(data); err != nil {
 			rec.Upstream = s.now().Sub(upStart)
 			rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
 			return
 		}
 		if rec.TTFT == 0 && text != "" {
-			rec.TTFT = s.now().Sub(rec.Start)
+			firstContentPending = true
+		}
+		// Flush unless the next chunk is already buffered: coalesces bursts
+		// into one write without ever delaying a chunk on network I/O.
+		if buffered == nil || !buffered.HasBufferedChunk() {
+			if err := sw.Flush(); err != nil {
+				rec.Upstream = s.now().Sub(upStart)
+				rec.Status, rec.ErrorCode = 499, provider.CodeCanceled
+				return
+			}
+			if firstContentPending {
+				rec.TTFT = s.now().Sub(rec.Start)
+				firstContentPending = false
+			}
 		}
 	}
 	rec.Upstream = s.now().Sub(upStart)

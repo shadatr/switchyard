@@ -29,6 +29,14 @@ type Stream interface {
 	Close() error
 }
 
+// BufferedStream is optionally implemented by streams that can report
+// whether the next chunk is already in memory. The server uses it to coalesce
+// flushes: it only flushes when the next Next call would block on the network,
+// so no chunk is ever held back waiting for more data.
+type BufferedStream interface {
+	HasBufferedChunk() bool
+}
+
 // Error codes used across providers.
 const (
 	CodeTimeout     = "timeout"
