@@ -1,0 +1,9 @@
+{
+  "contents": [
+    {"role": "user", "parts": [{"text": "What is this?"}, {"inlineData": {"mimeType": "image/jpeg", "data": "aGVsbG8="}}]},
+    {"role": "model", "parts": [{"text": "A cat."}]},
+    {"role": "user", "parts": [{"text": "Color?"}, {"text": "One word."}]}
+  ],
+  "systemInstruction": {"parts": [{"text": "You are terse."}]},
+  "generationConfig": {"temperature": 0, "maxOutputTokens": 64, "stopSequences": ["\n\n", "END"]}
+}

@@ -31,15 +31,24 @@ providers:
     type: openai
     base_url: http://localhost:9797/v1
 
-  # Uncomment and set OPENAI_API_KEY / ANTHROPIC_API_KEY to use real providers.
+  # Real providers: uncomment and set the key in .env. Clients always speak
+  # the OpenAI format; Switchyard translates for anthropic and gemini.
   # - name: openai
   #   type: openai
   #   base_url: https://api.openai.com/v1
   #   api_key_env: OPENAI_API_KEY
+  # - name: openrouter              # any OpenAI-compatible API works with type: openai
+  #   type: openai
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
   # - name: anthropic
   #   type: anthropic
   #   base_url: https://api.anthropic.com
   #   api_key_env: ANTHROPIC_API_KEY
+  # - name: gemini
+  #   type: gemini
+  #   base_url: https://generativelanguage.googleapis.com/v1beta
+  #   api_key_env: GEMINI_API_KEY
 
 models:
   - alias: mock-fast
@@ -51,7 +60,7 @@ models:
 routing:
   max_attempts: 3
   retry_backoff: { base: 100ms, max: 1s, jitter: true }
-  retry_on: [429, 500, 502, 503, 504, timeout, connect_error]
+  retry_on: [429, 500, 502, 503, 504, 529, timeout, connect_error]   # 529 = Anthropic "overloaded"
   first_byte_timeout: 20s
 
 breaker:

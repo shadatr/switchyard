@@ -1,0 +1,19 @@
+{
+  "model": "smart",
+  "messages": [
+    {"role": "system", "content": "You are terse."},
+    {"role": "system", "content": "Answer in English."},
+    {"role": "user", "content": "Describe this image."},
+    {"role": "user", "content": [
+      {"type": "text", "text": "Be specific."},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+      {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}}
+    ]},
+    {"role": "assistant", "content": "It is a cat."},
+    {"role": "user", "content": "What color?"}
+  ],
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "stop": "END",
+  "stream": false
+}

@@ -25,6 +25,8 @@ import (
 	"github.com/shadatr/switchyard/internal/logsink"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
+	"github.com/shadatr/switchyard/internal/provider/anthropic"
+	"github.com/shadatr/switchyard/internal/provider/gemini"
 	"github.com/shadatr/switchyard/internal/provider/openai"
 	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/server"
@@ -194,8 +196,12 @@ func buildProviders(cfg *config.Config) (map[string]provider.Provider, error) {
 		switch p.Type {
 		case config.ProviderOpenAI, config.ProviderMock:
 			out[p.Name] = openai.New(p, key)
+		case config.ProviderAnthropic:
+			out[p.Name] = anthropic.New(p, key)
+		case config.ProviderGemini:
+			out[p.Name] = gemini.New(p, key)
 		default:
-			return nil, fmt.Errorf("provider %q: type %q is not implemented yet", p.Name, p.Type)
+			return nil, fmt.Errorf("provider %q: unknown type %q", p.Name, p.Type)
 		}
 	}
 	return out, nil

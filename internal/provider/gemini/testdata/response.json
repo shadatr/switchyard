@@ -1,0 +1,6 @@
+{
+  "candidates": [{"content": {"parts": [{"text": "Orange"}, {"text": "."}], "role": "model"}, "finishReason": "STOP", "index": 0}],
+  "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 2, "totalTokenCount": 32},
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "resp-123"
+}

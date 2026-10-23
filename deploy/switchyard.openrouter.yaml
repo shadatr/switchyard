@@ -1,0 +1,20 @@
+# Live smoke test against a real provider through OpenRouter (free models).
+# Uses OPENROUTER_API_KEY from .env. No auth/Redis/ClickHouse needed.
+auth: { enabled: false }
+server: { addr: ":8788" }
+providers:
+  - name: openrouter
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+models:
+  - alias: free
+    strategy: priority
+    targets:
+      - { provider: openrouter, model: "liquid/lfm-2.5-2.6b:free" }
+      - { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+      - { provider: openrouter, model: "google/gemma-4-31b-it:free" }
+      - { provider: openrouter, model: "google/gemma-4-26b-a4b-it:free" }
+routing:
+  max_attempts: 4
+  retry_on: [429, 500, 502, 503, 504, timeout, connect_error]

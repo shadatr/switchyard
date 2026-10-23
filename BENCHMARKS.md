@@ -167,3 +167,14 @@ Under connection churn on macOS, resolving `localhost` goes through the system r
 ./bench/run.sh                        # default RATES="1000 5000 7500"
 RATES="1000 5000 7500" ./bench/run.sh # custom rates
 ```
+
+## Phase 10 — real-provider smoke test (OpenRouter)
+
+`deploy/switchyard.openrouter.yaml` routes alias `free` across four free OpenRouter models (two vendors as fallback). Using the official OpenAI Python SDK pointed at Switchyard:
+
+- non-streaming: `'Switchyard works'`, target `openrouter/liquid/lfm-2.5-2.6b:free`, 1 attempt, usage 17 → 250 tokens;
+- streaming with `include_usage`: `'1 2 3 4 5'`, usage 22 → 84 tokens.
+
+Observed along the way (real-world behaviour, not gateway bugs): Google's free Gemma models were rate-limited upstream (OpenRouter 429) — Switchyard tried both and returned an OpenAI-style 429 carrying the upstream message; reasoning models returned `content: null` when `max_tokens` was smaller than their reasoning budget — identical to calling OpenRouter directly, confirming the pass-through is faithful.
+
+Anthropic and Gemini adapters are covered by golden tests against recorded-format fixtures (`internal/provider/*/testdata`); they have not been exercised against the live APIs (no keys available).

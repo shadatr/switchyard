@@ -1,0 +1,18 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 4096,
+  "system": "You are terse.\n\nAnswer in English.",
+  "messages": [
+    {"role": "user", "content": [
+      {"type": "text", "text": "Describe this image."},
+      {"type": "text", "text": "Be specific."},
+      {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}},
+      {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}}
+    ]},
+    {"role": "assistant", "content": [{"type": "text", "text": "It is a cat."}]},
+    {"role": "user", "content": [{"type": "text", "text": "What color?"}]}
+  ],
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "stop_sequences": ["END"]
+}
