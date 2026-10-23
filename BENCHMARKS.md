@@ -118,6 +118,29 @@ Cache counters for the whole run: 165,259 hits, 4,741 misses, 4,741 stores.
 
 **Known limitation — cache stampede.** The 4,741 misses are the requests that arrived during the first ~0.95 s, before the first answer had been stored: every one of them went upstream. Request coalescing (identical in-flight misses wait for a single upstream call) would reduce that to one upstream call; it is on the roadmap.
 
+## Phase 8 — analytics pipeline (ClickHouse)
+
+### Logging overhead (run `20261023-130634`, 5,000 rps, auth + ClickHouse logging, `bench/switchyard.bench-analytics.yaml`)
+
+| Mode | Target rps | Achieved rps | Errors | Baseline p50 / p99 (ms) | Gateway p50 / p99 (ms) | Added p50 / p99 (ms) | Self-measured overhead p50 / p95 / p99 (ms) |
+|---|---:|---:|---:|---|---|---|---|
+| nonstream | 5000 | 5000 | 0 | 0.09 / 0.15 | 0.13 / 0.24 | +0.04 / +0.09 | 0.005 / 0.010 / 0.018 |
+| stream | 5000 | 5000 | 0 | 0.13 / 0.31 | 0.17 / 0.68 | +0.04 / +0.37 | 0.007 / 0.019 / 0.037 |
+
+Every request is logged (non-blocking enqueue → batched native INSERT); self-measured p99 overhead is unchanged from phase 4.
+
+### ClickHouse outage under load
+
+ClickHouse container stopped, then 5,000 rps for 30 s: **150,000 / 150,000 requests succeeded**, client p50 0.13 ms, gateway self-measured mean overhead 15 µs. `switchyard_logs_dropped_total` = 148,125, `switchyard_logs_written_total` = 0 — logs are dropped and counted, requests are unaffected. Client-observed p99 rose to 2.09 ms (vs 0.24 ms with ClickHouse healthy); suspected GC pressure from the full 100k-record queue — not yet confirmed.
+
+### Analytics queries at volume
+
+`cmd/seedlogs` wrote 1,000,000 synthetic rows (24 h, realistic mix) in 1.66 s. The 24-hour overview (served from the 1-minute `AggregatingMergeTree` rollup fed by a materialized view) takes **14.9 ms** (best of 5) over 1,000,120 rows. An integration test checks that the rollup and the raw table agree and that keyset pagination returns every row exactly once.
+
+### Live tail
+
+The WebSocket live tail batches events every 250 ms (max 200 per batch, overflow counted as `skipped`); at 500 rps a client received 12 batches / 1,480 events over 3 s. Publishing with no subscribers costs 3.3 ns.
+
 ## Optimization log
 
 ### 1. Flush coalescing for SSE (phase 3)

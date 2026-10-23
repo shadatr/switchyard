@@ -49,7 +49,8 @@ type Server struct {
 }
 
 type Admin struct {
-	TokenEnv string `yaml:"token_env"`
+	TokenEnv    string   `yaml:"token_env"`
+	CORSOrigins []string `yaml:"cors_origins"` // dashboard origins allowed to call the admin API
 }
 
 // Auth controls API key authentication. Disabling it is only meant for
@@ -195,6 +196,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Admin.TokenEnv == "" {
 		c.Admin.TokenEnv = "SWITCHYARD_ADMIN_TOKEN"
+	}
+	if c.Admin.CORSOrigins == nil {
+		c.Admin.CORSOrigins = []string{"http://localhost:3000"}
 	}
 	setDur(&c.Redis.Timeout, 50*time.Millisecond)
 	for i := range c.Providers {

@@ -16,6 +16,8 @@ import (
 	"github.com/shadatr/switchyard/internal/api"
 	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
+	"github.com/shadatr/switchyard/internal/live"
+	"github.com/shadatr/switchyard/internal/logsink"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/ratelimit"
 	"github.com/shadatr/switchyard/internal/router"
@@ -515,8 +517,30 @@ func (s *Server) finish(rec *record) {
 	if rec.Status == http.StatusOK {
 		m.TTFT.WithLabelValues(alias).Observe(rec.TTFT.Seconds())
 	}
+	overhead := rec.Latency - rec.Upstream - rec.Backoff
 	if rec.Upstream > 0 {
-		m.Overhead.Observe((rec.Latency - rec.Upstream - rec.Backoff).Seconds())
+		m.Overhead.Observe(overhead.Seconds())
 		m.Attempts.Observe(float64(rec.Attempts))
 	}
+	if s.sink != nil {
+		s.sink.Enqueue(logsink.Record{
+			TS: rec.Start, RequestID: rec.RequestID, ProjectID: rec.ProjectID, KeyID: rec.KeyID,
+			ModelAlias: rec.Alias, Target: rec.Target, Attempts: uint8(min(rec.Attempts, 255)), Status: uint16(rec.Status),
+			ErrorCode: rec.ErrorCode, Stream: rec.Stream, Cache: rec.Cache,
+			PromptTokens: uint32(max(rec.PromptTokens, 0)), CompletionTokens: uint32(max(rec.CompletionTokens, 0)),
+			TokensEstimated: rec.TokensEstimated, CostUSD: rec.CostUSD,
+			LatencyMs: durMs(rec.Latency), TTFTMs: durMs(rec.TTFT), UpstreamMs: durMs(rec.Upstream),
+			GatewayOverheadUs: uint32(max(overhead.Microseconds(), 0)),
+		})
+	}
+	if s.live != nil {
+		s.live.Publish(live.Event{
+			TS: rec.Start.UnixMilli(), RequestID: rec.RequestID, ProjectID: rec.ProjectID, KeyID: rec.KeyID,
+			Alias: rec.Alias, Target: rec.Target, Status: rec.Status, ErrorCode: rec.ErrorCode, Stream: rec.Stream,
+			Cache: rec.Cache, Attempts: rec.Attempts, PromptTokens: rec.PromptTokens, CompletionTokens: rec.CompletionTokens,
+			CostUSD: rec.CostUSD, LatencyMs: float64(rec.Latency.Microseconds()) / 1000, TTFTMs: float64(rec.TTFT.Microseconds()) / 1000,
+		})
+	}
 }
+
+func durMs(d time.Duration) uint32 { return uint32(max(d.Milliseconds(), 0)) }

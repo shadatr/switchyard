@@ -11,14 +11,18 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/shadatr/switchyard/internal/admin"
 	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
+	"github.com/shadatr/switchyard/internal/live"
+	"github.com/shadatr/switchyard/internal/logsink"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/provider"
 	"github.com/shadatr/switchyard/internal/provider/openai"
@@ -64,14 +68,14 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var background sync.WaitGroup // goroutines that must finish before exit (log drain)
 
 	m := metrics.New()
-	deps := server.Deps{
-		Config:    cfg,
-		Providers: providers,
-		Metrics:   m,
-		Logger:    slog.Default(),
-	}
+	hub := live.NewHub(m)
+	deps := server.Deps{Config: cfg, Providers: providers, Metrics: m, Logger: slog.Default(), Live: hub}
+	adm := admin.Deps{Token: os.Getenv(cfg.Admin.TokenEnv), Hub: hub, CORSOrigins: cfg.Admin.CORSOrigins, Logger: slog.Default()}
+
+	// Redis: rate limits, budgets, cache (all fail open).
 	if cfg.Redis.Addr != "" {
 		rdb := redis.NewClient(&redis.Options{
 			Addr: cfg.Redis.Addr, DialTimeout: time.Second,
@@ -82,11 +86,15 @@ func run() error {
 		if err := rdb.Ping(ctx).Err(); err != nil {
 			slog.Warn("redis not reachable at startup; limits will fail open until it is", "addr", cfg.Redis.Addr, "err", err)
 		}
-		deps.Limiter = ratelimit.New(rdb, cfg.Redis.Timeout, m, slog.Default())
+		limiter := ratelimit.New(rdb, cfg.Redis.Timeout, m, slog.Default())
+		deps.Limiter = limiter
+		adm.Spend = limiter.Spent
 		if cfg.Cache.Enabled {
 			deps.Cache = cache.New(rdb, cfg.Cache, cfg.Redis.Timeout, m)
 		}
 	}
+
+	// Postgres: API keys (required when auth is enabled).
 	if cfg.Auth.IsEnabled() {
 		st, err := openStore(ctx, cfg)
 		if err != nil {
@@ -96,14 +104,44 @@ func run() error {
 		authn := auth.New(st, auth.DefaultOptions(), slog.Default())
 		go authn.RunTouch(ctx)
 		deps.Auth = authn
+		adm.Keys = st
+		adm.InvalidateAuth = authn.Invalidate
 	} else {
 		slog.Warn("authentication is DISABLED (auth.enabled: false) — do not expose this instance")
 	}
-	srv := server.New(deps)
 
+	// ClickHouse: request analytics (optional, never on the hot path).
+	if cfg.ClickHouse.Addr != "" {
+		conn, err := logsink.Open(ctx, cfg.ClickHouse.Addr, cfg.ClickHouse.Database, cfg.ClickHouse.Username, os.Getenv(cfg.ClickHouse.PasswordEnv))
+		if err != nil {
+			slog.Warn("clickhouse not reachable at startup; analytics disabled", "addr", cfg.ClickHouse.Addr, "err", err)
+		} else {
+			defer conn.Close()
+			if err := logsink.Migrate(ctx, conn); err != nil {
+				return fmt.Errorf("migrate clickhouse: %w", err)
+			}
+			sink := logsink.New(logsink.CHWriter{Conn: conn}, logsink.Options{
+				QueueSize: cfg.LogSink.QueueSize, BatchSize: cfg.LogSink.BatchSize, FlushInterval: cfg.LogSink.FlushInterval,
+			}, m, slog.Default())
+			background.Add(1)
+			go func() { defer background.Done(); sink.Run(ctx) }()
+			deps.Sink = sink
+			adm.Analytics = &admin.Analytics{Conn: conn}
+		}
+	}
+
+	srv := server.New(deps)
+	adm.Breakers = srv.Router().BreakerStates
+	if adm.Token == "" {
+		slog.Warn("admin API disabled: set " + cfg.Admin.TokenEnv)
+	}
+
+	root := http.NewServeMux()
+	root.Handle("/admin/", admin.Handler(adm))
+	root.Handle("/", srv.Handler())
 	hs := &http.Server{
 		Addr:              cfg.Server.Addr,
-		Handler:           srv.Handler(),
+		Handler:           root,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
 	}
 
@@ -129,7 +167,9 @@ func run() error {
 	slog.Info("shutting down", "grace", cfg.Server.ShutdownGrace.String())
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
 	defer cancel()
-	return hs.Shutdown(shutdownCtx)
+	err = hs.Shutdown(shutdownCtx)
+	background.Wait() // let the log sink drain
+	return err
 }
 
 func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {

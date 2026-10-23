@@ -14,6 +14,8 @@ import (
 	"github.com/shadatr/switchyard/internal/auth"
 	"github.com/shadatr/switchyard/internal/cache"
 	"github.com/shadatr/switchyard/internal/config"
+	"github.com/shadatr/switchyard/internal/live"
+	"github.com/shadatr/switchyard/internal/logsink"
 	"github.com/shadatr/switchyard/internal/metrics"
 	"github.com/shadatr/switchyard/internal/pricing"
 	"github.com/shadatr/switchyard/internal/provider"
@@ -50,6 +52,13 @@ type Deps struct {
 	Auth      Authenticator // nil disables authentication (benchmarks only)
 	Limiter   Limiter       // nil disables rate limits and budgets
 	Cache     *cache.Cache  // nil disables the response cache
+	Sink      Sink          // nil disables request logging
+	Live      *live.Hub     // nil disables the live tail
+}
+
+// Sink receives one record per finished request; it must not block.
+type Sink interface {
+	Enqueue(r logsink.Record) bool
 }
 
 // anonymousKey is used when authentication is disabled.
@@ -95,6 +104,8 @@ type Server struct {
 	auth      Authenticator
 	limiter   Limiter
 	cache     *cache.Cache
+	sink      Sink
+	live      *live.Hub
 	pricing   pricing.Table
 	now       func() time.Time
 }
@@ -109,6 +120,8 @@ func New(d Deps) *Server {
 		auth:      d.Auth,
 		limiter:   d.Limiter,
 		cache:     d.Cache,
+		sink:      d.Sink,
+		live:      d.Live,
 		pricing:   pricing.Table(d.Config.Pricing),
 		now:       time.Now,
 	}
@@ -121,6 +134,9 @@ func New(d Deps) *Server {
 	s.router = router.New(d.Config, s.metrics)
 	return s
 }
+
+// Router exposes routing state (breakers) for the admin API.
+func (s *Server) Router() *router.Router { return s.router }
 
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
