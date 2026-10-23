@@ -469,7 +469,8 @@ func (a *api) liveTail(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	batch := make([]live.Event, 0, maxBatch)
-	skipped := int64(0)
+	skipped := int64(0)     // events beyond maxBatch in the current window
+	lastDropped := int64(0) // hub drops already reported
 	for {
 		select {
 		case <-ctx.Done():
@@ -481,10 +482,14 @@ func (a *api) liveTail(w http.ResponseWriter, r *http.Request) {
 				skipped++
 			}
 		case <-tick.C:
-			if len(batch) == 0 && skipped == 0 {
+			d := dropped()
+			newDrops := d - lastDropped
+			if len(batch) == 0 && skipped == 0 && newDrops == 0 {
 				continue
 			}
-			msg, _ := json.Marshal(map[string]any{"events": batch, "skipped": skipped + dropped()})
+			lastDropped = d
+			// skipped is per batch: events this subscriber missed since the last message.
+			msg, _ := json.Marshal(map[string]any{"events": batch, "skipped": skipped + newDrops})
 			wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
 			err := c.Write(wctx, websocket.MessageText, msg)
 			wcancel()

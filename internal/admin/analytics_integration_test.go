@@ -45,7 +45,7 @@ func TestAnalyticsEndToEnd(t *testing.T) {
 		}
 		rows = append(rows, logsink.Record{TS: base.Add(time.Duration(i) * time.Second), RequestID: ulid.Make().String(),
 			ProjectID: project, KeyID: "k", ModelAlias: []string{"fast", "smart"}[i%2], Target: "mock/a", Attempts: 1,
-			Status: status, Cache: cache, PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.001, LatencyMs: uint32(100 + i), TTFTMs: 20})
+			Status: status, Cache: cache, Stream: true, PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.001, LatencyMs: float32(100 + i), TTFTMs: 20})
 	}
 	if err := (logsink.CHWriter{Conn: a.Conn}).Write(ctx, rows); err != nil {
 		t.Fatal(err)

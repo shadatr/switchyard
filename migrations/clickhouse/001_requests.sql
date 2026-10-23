@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS requests (
   completion_tokens   UInt32,
   tokens_estimated    Bool,
   cost_usd            Float64,
-  latency_ms          UInt32,
-  ttft_ms             UInt32,
-  upstream_ms         UInt32,
+  latency_ms          Float32,
+  ttft_ms             Float32,
+  upstream_ms         Float32,
   gateway_overhead_us UInt32
 )
 ENGINE = MergeTree

@@ -569,4 +569,4 @@ func (s *Server) finish(ctx context.Context, rec *record) {
 	}
 }
 
-func durMs(d time.Duration) uint32 { return uint32(max(d.Milliseconds(), 0)) }
+func durMs(d time.Duration) float32 { return float32(max(d.Microseconds(), 0)) / 1000 }

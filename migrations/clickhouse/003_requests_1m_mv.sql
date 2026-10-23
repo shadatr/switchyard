@@ -11,6 +11,6 @@ SELECT
   toUInt64(sum(completion_tokens))                            AS completion_tokens,
   sum(cost_usd)                                               AS cost_usd,
   quantilesState(0.5, 0.95, 0.99)(latency_ms)                 AS latency_q,
-  quantilesStateIf(0.5, 0.95, 0.99)(ttft_ms, status = 200)    AS ttft_q
+  quantilesStateIf(0.5, 0.95, 0.99)(ttft_ms, status = 200 AND stream) AS ttft_q
 FROM requests
 GROUP BY minute, project_id, model_alias, target;

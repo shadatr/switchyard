@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -23,6 +24,8 @@ func main() {
 	n := flag.Int("rows", 1_000_000, "rows to write")
 	span := flag.Duration("span", 24*time.Hour, "spread rows over this period ending now")
 	batch := flag.Int("batch", 100_000, "rows per insert")
+	projectList := flag.String("projects", "demo,acme,internal", "comma-separated project ids to attribute rows to")
+	keyList := flag.String("keys", "key-web,key-mobile,key-batch,key-eval", "comma-separated key ids")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -48,8 +51,8 @@ func main() {
 		{"smart", "anthropic/claude-sonnet-4-5", 3.00, 15.00, 2600},
 		{"cheap", "openrouter/llama-3.1-8b", 0.05, 0.08, 600},
 	}
-	projects := []string{"demo", "acme", "internal"}
-	keys := []string{"key-web", "key-mobile", "key-batch", "key-eval"}
+	projects := strings.Split(*projectList, ",")
+	keys := strings.Split(*keyList, ",")
 	end := time.Now().UTC()
 	start := end.Add(-*span)
 
@@ -93,7 +96,7 @@ func main() {
 			TS: ts, RequestID: ulid.Make().String(), ProjectID: projects[rand.IntN(len(projects))], KeyID: keys[rand.IntN(len(keys))],
 			ModelAlias: tg.alias, Target: tg.target, Attempts: 1, Status: uint16(status), ErrorCode: code, Stream: stream,
 			Cache: cacheRes, PromptTokens: prompt, CompletionTokens: completion, CostUSD: cost,
-			LatencyMs: uint32(latency), TTFTMs: uint32(ttft), UpstreamMs: uint32(max(upstream, 0)), GatewayOverheadUs: uint32(80 + rand.IntN(400)),
+			LatencyMs: float32(latency), TTFTMs: float32(ttft), UpstreamMs: float32(max(upstream, 0)), GatewayOverheadUs: uint32(80 + rand.IntN(400)),
 		})
 		if len(rs) == *batch || i == *n-1 {
 			if err := w.Write(ctx, rs); err != nil {

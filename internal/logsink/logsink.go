@@ -29,9 +29,9 @@ type Record struct {
 	CompletionTokens  uint32
 	TokensEstimated   bool
 	CostUSD           float64
-	LatencyMs         uint32
-	TTFTMs            uint32
-	UpstreamMs        uint32
+	LatencyMs         float32
+	TTFTMs            float32
+	UpstreamMs        float32
 	GatewayOverheadUs uint32
 }
 

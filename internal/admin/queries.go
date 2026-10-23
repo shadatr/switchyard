@@ -73,8 +73,8 @@ type Overview struct {
 	CompletionTokens uint64     `json:"completion_tokens"`
 	CostUSD          float64    `json:"cost_usd"`
 	LatencyMs        Percentile `json:"latency_ms"`
-	TTFTMs           Percentile `json:"ttft_ms"`
-	Source           string     `json:"source"` // "raw" or "rollup_1m"
+	TTFTMs           Percentile `json:"ttft_ms"` // successful streaming requests only
+	Source           string     `json:"source"`  // "raw" or "rollup_1m"
 	QueryMs          float64    `json:"query_ms"`
 }
 
@@ -118,7 +118,7 @@ func (a *Analytics) Overview(ctx context.Context, f Filter) (*Overview, error) {
 			FROM requests_1m` + where
 	} else {
 		q = `SELECT count(), countIf(status >= 400), countIf(cache = 'hit'), sum(prompt_tokens), sum(completion_tokens), sum(cost_usd),
-			quantiles(0.5, 0.95, 0.99)(latency_ms), quantilesIf(0.5, 0.95, 0.99)(ttft_ms, status = 200)
+			quantiles(0.5, 0.95, 0.99)(latency_ms), quantilesIf(0.5, 0.95, 0.99)(ttft_ms, status = 200 AND stream)
 			FROM requests` + where
 	}
 	if err := a.Conn.QueryRow(ctx, q, args...).Scan(&o.Requests, &o.Errors, &o.CacheHits, &o.PromptTokens,
@@ -173,7 +173,7 @@ func (a *Analytics) Timeseries(ctx context.Context, f Filter, interval time.Dura
 	} else {
 		q = fmt.Sprintf(`SELECT toStartOfInterval(ts, INTERVAL %d SECOND) AS t, count(), countIf(status >= 400), countIf(cache = 'hit'),
 			sum(prompt_tokens) + sum(completion_tokens), sum(cost_usd),
-			quantiles(0.5, 0.95, 0.99)(latency_ms), quantilesIf(0.5, 0.95, 0.99)(ttft_ms, status = 200)
+			quantiles(0.5, 0.95, 0.99)(latency_ms), quantilesIf(0.5, 0.95, 0.99)(ttft_ms, status = 200 AND stream)
 			FROM requests%s GROUP BY t ORDER BY t`, secs, where)
 	}
 	rows, err := a.Conn.Query(ctx, q, args...)
@@ -212,9 +212,9 @@ type Request struct {
 	CompletionTokens  uint32    `json:"completion_tokens"`
 	TokensEstimated   bool      `json:"tokens_estimated"`
 	CostUSD           float64   `json:"cost_usd"`
-	LatencyMs         uint32    `json:"latency_ms"`
-	TTFTMs            uint32    `json:"ttft_ms"`
-	UpstreamMs        uint32    `json:"upstream_ms"`
+	LatencyMs         float32   `json:"latency_ms"`
+	TTFTMs            float32   `json:"ttft_ms"`
+	UpstreamMs        float32   `json:"upstream_ms"`
 	GatewayOverheadUs uint32    `json:"gateway_overhead_us"`
 }
 

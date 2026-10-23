@@ -7,3 +7,5 @@ web/.next/
 bench/results/
 *.pprof
 .DS_Store
+/seedlogs
+/wstail
