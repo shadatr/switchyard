@@ -21,7 +21,7 @@ All numbers here come from `bench/run.sh` in this repository. Raw JSON results a
 - **Added** — gateway minus baseline (client-observed). Negative values are noise.
 - **Self-measured overhead** — from the gateway's own histogram (p50 / p95 / p99).
 
-## Results (phase 3, commit after flush coalescing)
+## Phase 3 results (proxy only, after flush coalescing)
 
 ### Run A — `20261023-121242`
 
@@ -54,6 +54,23 @@ At 10,000 streaming rps (200,000 SSE events/s) the **baseline itself** degrades 
 - **Gateway self-measured overhead p99 stays below 0.11 ms** at every sustainable rate in both runs (non-streaming and streaming).
 - **Client-observed added median latency is ≤ 0.31 ms** at every sustainable rate.
 - Streaming is sustained at **7,500 rps × 20 tokens = 150,000 SSE events/s** with zero errors on a single laptop shared with the load generator and the upstream.
+
+## Final run — v0.1.0 (run `20261023-134106`)
+
+Everything enabled except Redis limits: API-key auth, routing + breakers, ClickHouse request logging, Prometheus metrics, OpenTelemetry (disabled → no-op). `bench/switchyard.bench-analytics.yaml`. Note: the demo stack (gateway, dashboard, ~40 rps of live traffic, ClickHouse ingestion) was running on the same laptop during this run.
+
+| Mode | Target rps | Achieved rps | Errors | Baseline p50 / p99 (ms) | Gateway p50 / p99 (ms) | Added p50 / p99 (ms) | Self-measured overhead p50 / p95 / p99 (ms) |
+|---|---:|---:|---:|---|---|---|---|
+| nonstream | 1000 | 1000 | 0 | 0.35 / 1.31 | 0.52 / 1.92 | +0.17 / +0.62 | 0.033 / 0.075 / 0.122 |
+| nonstream | 5000 | 5000 | 0 | 0.08 / 0.36 | 0.12 / 0.59 | +0.04 / +0.22 | 0.005 / 0.010 / 0.027 |
+| nonstream | 7500 | 7500 | 0 | 0.07 / 0.73 | 0.11 / 0.47 | +0.04 / −0.26 | 0.005 / 0.014 / 0.036 |
+| stream | 1000 | 1000 | 0 | 0.53 / 2.82 | 0.57 / 2.89 | +0.04 / +0.07 | 0.029 / 0.076 / 0.131 |
+| stream | 5000 | 5000 | 0 | 0.12 / 0.65 | 0.17 / 1.22 | +0.05 / +0.57 | 0.007 / 0.021 / 0.054 |
+| stream | 7500 | 7499 | 0 | 0.11 / 1.38 | 0.26 / 28.37 | +0.15 / +26.98 | 0.010 / 0.044 / 0.079 |
+
+- Streaming TTFT p50: 0.37 → 0.46 ms (1k), 0.08 → 0.13 ms (5k), 0.07 → 0.22 ms (7.5k).
+- **Self-measured overhead p99 ≤ 0.131 ms at every rate**, zero errors throughout.
+- The +27 ms client p99 at 7,500 streaming rps is tail latency from a saturated machine (load generator + upstream + gateway + the live demo stack sharing 10 cores); the gateway's own p99 for the same run is 0.079 ms.
 
 ## Phase 4 — with API-key authentication (`bench/switchyard.bench-auth.yaml`)
 

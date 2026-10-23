@@ -19,7 +19,7 @@ client.chat.completions.create(model="fast", messages=[{"role": "user", "content
 
 | | |
 |---|---|
-| **Gateway overhead** | p99 **0.02–0.07 ms** self-measured at 5,000 rps (auth + routing + logging), measured from request arrival — see [BENCHMARKS.md](BENCHMARKS.md) |
+| **Gateway overhead** | p99 **≤ 0.13 ms** self-measured at every tested rate up to 7,500 rps (auth + routing + ClickHouse logging), measured from request arrival — see [BENCHMARKS.md](BENCHMARKS.md) |
 | **Streaming** | 7,500 streaming rps × 20 tokens (150k SSE events/s) on one laptop with zero errors |
 | **Resilience** | With a primary failing 30% of requests: **100%** client success; with the primary fully down: **100%**, breaker opens after ~20 requests |
 | **Outage tolerance** | ClickHouse stopped at 5k rps: 0 failed requests. Redis stopped: limits fail open, requests succeed |
@@ -102,12 +102,12 @@ cache:   { enabled: true, ttl: 10m, only_when_temperature_zero: true }
 
 ## Benchmarks
 
-Measured on an Apple M4 (10 cores) with the load generator, a zero-latency mock upstream and the gateway on the same machine. Full method, raw runs and caveats: [BENCHMARKS.md](BENCHMARKS.md).
+Final v0.1.0 run on an Apple M4 (10 cores), with the load generator, a zero-latency mock upstream and the gateway on the same machine. Full method, raw runs and caveats: [BENCHMARKS.md](BENCHMARKS.md).
 
 | Scenario @ 5,000 rps | Gateway self-measured overhead p50 / p99 | Client-observed added p50 / p99 |
 |---|---|---|
-| Proxy + auth + routing + ClickHouse logging, non-stream | 0.005 / 0.018 ms | +0.04 / +0.09 ms |
-| Same, streaming (20 tokens) | 0.007 / 0.037 ms | +0.04 / +0.37 ms |
+| Proxy + auth + routing + ClickHouse logging, non-stream | 0.005 / 0.027 ms | +0.04 / +0.22 ms |
+| Same, streaming (20 tokens) | 0.007 / 0.054 ms | +0.05 / +0.57 ms |
 | + Redis rate limits & budgets (Redis in Docker Desktop) | 0.151 / 1.107 ms | +0.23 / +0.86 ms |
 
 Reproduce: `./bench/run.sh`, `./bench/chaos.sh`.
