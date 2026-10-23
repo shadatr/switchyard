@@ -1,0 +1,9 @@
+bin/
+.env
+*.local.yaml
+deploy/switchyard.yaml
+web/node_modules/
+web/.next/
+bench/results/*.json
+*.pprof
+.DS_Store

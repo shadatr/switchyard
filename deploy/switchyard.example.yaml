@@ -1,0 +1,75 @@
+# Switchyard example configuration. Copy to switchyard.yaml and edit.
+# Provider API keys are read from environment variables (see .env.example).
+
+server:
+  addr: ":8787"
+  read_header_timeout: 5s
+  shutdown_grace: 20s
+  max_body_bytes: 2097152
+
+admin:
+  token_env: SWITCHYARD_ADMIN_TOKEN
+
+redis:
+  addr: "localhost:16379"
+  timeout: 50ms
+  fail_open: true
+
+postgres:
+  dsn_env: SWITCHYARD_PG_DSN
+
+clickhouse:
+  addr: "localhost:19000"
+  database: switchyard
+  username: default
+  password_env: SWITCHYARD_CH_PASSWORD
+
+providers:
+  # mockllm (cmd/mockllm) speaks the OpenAI protocol and needs no key.
+  - name: mock
+    type: openai
+    base_url: http://localhost:9797/v1
+
+  # Uncomment and set OPENAI_API_KEY / ANTHROPIC_API_KEY to use real providers.
+  # - name: openai
+  #   type: openai
+  #   base_url: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  # - name: anthropic
+  #   type: anthropic
+  #   base_url: https://api.anthropic.com
+  #   api_key_env: ANTHROPIC_API_KEY
+
+models:
+  - alias: mock-fast
+    strategy: weighted
+    targets:
+      - { provider: mock, model: mock-a, weight: 80 }
+      - { provider: mock, model: mock-b, weight: 20 }
+
+routing:
+  max_attempts: 3
+  retry_backoff: { base: 100ms, max: 1s, jitter: true }
+  retry_on: [429, 500, 502, 503, 504, timeout, connect_error]
+  first_byte_timeout: 20s
+
+breaker:
+  failure_threshold: 5
+  open_duration: 30s
+  half_open_max_requests: 1
+
+cache:
+  enabled: true
+  ttl: 10m
+  only_when_temperature_zero: true
+  max_entry_bytes: 262144
+
+# USD per 1M tokens. EXAMPLE values — set these to the providers' current list prices.
+pricing:
+  "mock/mock-a": { input: 0.10, output: 0.40 }
+  "mock/mock-b": { input: 0.20, output: 0.80 }
+
+logsink:
+  queue_size: 100000
+  batch_size: 5000
+  flush_interval: 500ms

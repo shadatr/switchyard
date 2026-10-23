@@ -1,0 +1,46 @@
+name: switchyard
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["16379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: switchyard
+      POSTGRES_PASSWORD: switchyard
+      POSTGRES_DB: switchyard
+    ports: ["15432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchyard -d switchyard"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: switchyard
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: switchyard
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["18123:8123", "19000:9000"]
+    volumes: ["chdata:/var/lib/clickhouse"]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  pgdata:
+  chdata:

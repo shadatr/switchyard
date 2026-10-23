@@ -1,0 +1,2 @@
+// Package api is part of the Switchyard LLM gateway. See PLAN.md.
+package api
